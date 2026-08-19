@@ -1,0 +1,11 @@
+# armv7-unknown-linux-musleabihf covers the KOA2's Cortex-A9 and the MediaTek
+# devices (Colorsoft, Scribe). musl links statically.
+#
+#   cargo build --release --target armv7-unknown-linux-musleabihf
+#
+# `rust-lld` resolves from rustc's own sysroot and needs no PATH entry.
+# `link-self-contained` supplies the musl crt objects. Both hold while no
+# crate in the graph has a C build script.
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]

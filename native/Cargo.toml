@@ -1,0 +1,32 @@
+[package]
+name = "kfxdedrm-fe-native"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+publish = false
+
+[lib]
+name = "kfxdedrm_fe_native"
+path = "src/lib.rs"
+
+[[bin]]
+# build.sh copies this to `bin/kfxdedrm-fe`; `launch.sh` runs
+# `pidof kfxdedrm-fe`.
+name = "kfxdedrm-fe-native"
+path = "src/main.rs"
+
+[dependencies]
+# open/ioctl on /dev/fb0 and the evdev nodes. No C build script.
+libc = "0.2"
+# Error propagation with context strings.
+anyhow = "1"
+# TTF rasterizer over /usr/java/lib/fonts. Outlines one glyph per call; a
+# 23.5 MB CJK face costs 24 MB resident against fontdue's 308 MB.
+ab_glyph = "0.2"
+# JPEG decode for `scan::Book::cover_path`, PNG encode for
+# `eink::screenshot::capture`.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# X11 wire protocol over the socket, no libxcb. The `allow-unsafe-code`
+# feature pulls `as-raw-xcb-connection`, which links `-lxcb` and breaks the
+# static musl link.
+x11rb = { version = "0.13", default-features = false }

@@ -1,0 +1,9 @@
+{
+  "items": [
+    {
+      "name": "KFX DeDRM",
+      "priority": 1,
+      "action": "bin/launch.sh"
+    }
+  ]
+}

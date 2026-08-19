@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="2200" viewBox="0 0 1440 2200">
+  <!-- kfxdedrm-fe's home-screen tile.
+
+       One motif — an open padlock over a closed book — and a wordmark. The
+       lock is drawn open rather than broken: the app removes a restriction
+       from books the user already owns, and leaves the original file exactly
+       where it was.
+
+       Flat colour, no gradients, no fine detail: the tile is rasterised small
+       and drawn on e-ink. On a grayscale panel this collapses to ~40 vs ~242
+       luma, so the contrast survives the luma path the KOA2 and Scribe take. -->
+  <rect width="1440" height="2200" fill="#232a2e"/>
+
+  <g fill="#f5f2ec">
+    <!-- Padlock. The shackle's right leg stops short of the body, which is the
+         whole difference between an open lock and a closed one at this size. -->
+    <path d="M 650 646 L 650 560 A 70 70 0 0 1 790 560 L 790 600"
+          fill="none" stroke="#f5f2ec" stroke-width="36" stroke-linecap="round"/>
+    <rect x="596" y="622" width="248" height="186" rx="28"/>
+
+    <!-- Closed book, seen face on: the spine fold on the left, three ruled
+         lines standing in for the title block. -->
+    <rect x="470" y="884" width="500" height="620" rx="24"/>
+  </g>
+
+  <!-- Ground-coloured cut-outs: the keyhole, the spine fold, the ruled lines. -->
+  <g fill="#232a2e">
+    <circle cx="720" cy="694" r="24"/>
+    <path d="M 706 700 h 28 l 10 66 h -48 z"/>
+
+    <rect x="556" y="914" width="12" height="560"/>
+    <rect x="614" y="1092" width="296" height="16" rx="8"/>
+    <rect x="614" y="1156" width="296" height="16" rx="8"/>
+    <rect x="614" y="1220" width="212" height="16" rx="8"/>
+  </g>
+
+  <!-- Hairline above the wordmark, the one piece of editorial furniture. -->
+  <rect x="460" y="1660" width="520" height="3" fill="#f5f2ec" opacity="0.5"/>
+
+  <!-- Letter-spacing adds a trailing advance after the final glyph, so
+       text-anchor="middle" centres the glyphs *plus* that gap and the word
+       lands left of true centre. Both x values are nudged right by half the
+       spacing to compensate. -->
+  <text x="750" y="1812" font-family="Baskerville" font-weight="600"
+        font-size="176" letter-spacing="60" fill="#f5f2ec"
+        text-anchor="middle">DEDRM</text>
+  <text x="726" y="1929" font-family="Baskerville" font-weight="600"
+        font-size="46" letter-spacing="12" fill="#f5f2ec" opacity="0.72"
+        text-anchor="middle">KFX · AZW3 · MOBI</text>
+</svg>

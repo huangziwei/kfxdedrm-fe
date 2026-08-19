@@ -1,4 +1,6 @@
-artifacts
-ref
-.DS_Store
 .claude
+.DS_Store
+
+artifacts/
+/target
+ref/

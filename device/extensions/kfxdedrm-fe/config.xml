@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- KUAL extension descriptor. The menu is a single entry pointing at
+     bin/launch.sh, which is the same script the home-screen tile runs.
+
+     This extension is kfxdedrm-fe and installs at
+     /mnt/us/extensions/kfxdedrm-fe/. The engine it drives is a different
+     extension named kfxdedrm, at /mnt/us/extensions/kfxdedrm/ — unpacking
+     either one over the other destroys the install. -->
+<extension>
+    <information>
+        <name>KFX DeDRM</name>
+        <version>0.1.0</version>
+        <author>hzwei.dev</author>
+        <id>kfxdedrm-fe</id>
+    </information>
+    <menus>
+        <menu type="json">menu.json</menu>
+    </menus>
+</extension>

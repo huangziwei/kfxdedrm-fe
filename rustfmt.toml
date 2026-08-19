@@ -1,0 +1,3 @@
+# Pins the edition for a rustfmt invoked directly by an editor, which
+# otherwise reads it from each crate's Cargo.toml.
+edition = "2024"
