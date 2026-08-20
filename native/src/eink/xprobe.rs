@@ -299,12 +299,12 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
 /// flight?
 ///
 /// This is the one thing the rest of the probe cannot answer, because it only
-/// ever paints when nothing else is. `repaint_page` does the opposite: a
+/// ever paints when nothing else is. `app::run`'s repaint does the opposite: a
 /// full-screen `GC16` — a full flash over 4.6M pixels, on the order of a second —
-/// and then, without waiting, twenty per-cover partial updates. If later updates
-/// supersede an in-flight one, the fast partials win, the full refresh is
-/// abandoned, and the panel keeps its previous frame everywhere except the cells
-/// that were painted individually. That is the reported behaviour exactly.
+/// and then, without waiting, one partial update per cover as it decodes. If
+/// later updates supersede an in-flight one, the fast partials win, the full
+/// refresh is abandoned, and the panel keeps its previous frame everywhere
+/// except the cells that were painted individually.
 ///
 /// The test is visual because the outcome lives on the panel, not in the
 /// protocol: X will report success either way. Each phase says what it painted,
@@ -391,7 +391,7 @@ fn probe_supersession(
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     // Phase 2 — the real question. Full paint immediately followed by the burst,
-    // exactly as `repaint_page` sequences them.
+    // the order `app::run` repaints and then fills covers in.
     let t = Instant::now();
     paint_full(0xFF);
     paint_squares(0x00);
@@ -409,9 +409,9 @@ fn probe_supersession(
     );
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // Phase 3 — the candidate fix. Same content, but let the full refresh settle
-    // before the partials go out. If phase 2 failed and this succeeds, the cure
-    // is sequencing, not upload size.
+    // Phase 3 — same content, but let the full refresh settle before the
+    // partials go out. If phase 2 failed and this succeeds, the cause is
+    // sequencing, not upload size.
     let t = Instant::now();
     paint_full(0xFF);
     let _ = conn
@@ -442,11 +442,10 @@ fn probe_supersession(
 
 /// Does `BackingStore::ALWAYS` stop paints from reaching the panel?
 ///
-/// The probe's window and the renderer's are not created alike: the renderer
-/// asks for backing store. With `Composite` active, a server honouring that
-/// request may keep our pixels in off-screen storage and propagate them on its
-/// own schedule — content present and hit-testable, but not displayed until
-/// something later flushes it.
+/// With `Composite` active, a server honouring a backing-store request may keep
+/// a window's pixels in off-screen storage and propagate them on its own
+/// schedule — content present and hit-testable, but not displayed until
+/// something later flushes it. `Framebuffer::open` therefore never asks for it.
 ///
 /// Two windows, same paints, one difference. Whichever one misbehaves names the
 /// cause.

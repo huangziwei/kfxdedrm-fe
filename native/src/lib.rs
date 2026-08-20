@@ -2,6 +2,8 @@
 //!
 //! - [`config`], [`engine`], [`mobi`], [`scan`] — which books are listed, which
 //!   engine build runs, what it receives, where its output lands.
+//! - [`convert`] — the optional bokai add-on, and the extra formats the
+//!   settings ask it for beside that output.
 //! - [`eink`] — the framebuffer window, the evdev touchscreen and bezel keys.
 //! - [`ui`], [`font`], [`wrap`] — what is drawn.
 //! - [`app`] — the run loop.
@@ -15,6 +17,7 @@
 
 pub mod app;
 pub mod config;
+pub mod convert;
 pub mod eink;
 pub mod engine;
 pub mod font;

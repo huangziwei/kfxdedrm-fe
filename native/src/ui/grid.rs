@@ -68,7 +68,7 @@ impl Layout {
 
         let grid_w = cols as u32 * CELL_W + (cols as u32 - 1) * COL_GAP;
 
-        // Centre the block between the search bar and the pager strip. `cell_h`
+        // Centre the block between the header band and the pager strip. `cell_h`
         // is clamped to `CELL_H_MAX`, so on a tall panel the rows leave real
         // slack — ~136px on a 1696px Colorsoft — and anchoring to the top would
         // spend all of it below the grid.
@@ -220,8 +220,8 @@ pub fn blit_fit(
     rect
 }
 
-/// Frame the pressed cell with a 6px black border so the user knows which is
-/// armed (download for a book, drill-in for a series).
+/// Frame the pressed cell with a 6px black border so the user knows which cell
+/// is armed.
 ///
 /// Transient, and the loudest thing the grid draws. A standing property of a
 /// book gets the quieter [`draw_downloaded_badge`] instead.
@@ -229,13 +229,13 @@ pub fn outline_cell(fb: &mut Framebuffer, cell_x: i32, cell_y: i32, cell_h: u32)
     outline_rect(fb, cell_x, cell_y, CELL_W, cell_h, 6, 0x00);
 }
 
-/// Mark a book already in the library: a small gray check disc in the cover's
-/// top-right corner.
+/// Mark a book whose outputs are all present: a small gray check disc in the
+/// cover's top-right corner.
 ///
 /// Quieter than the cell itself — a mark on the whole tile would make the one
-/// book needing no attention the page's focal point. Top-right because SE
-/// covers carry a title plate along the bottom edge and the series tile's count
-/// badge owns the bottom-left. `cover` is the painted cover rect from
+/// book needing no attention the page's focal point. Top-right because cover
+/// art often carries a title plate along the bottom edge and the series tile's
+/// count badge owns the bottom-left. `cover` is the painted cover rect from
 /// [`draw_book_cell`]; a zero-size rect (off-screen cell) no-ops.
 pub fn draw_downloaded_badge(fb: &mut Framebuffer, cover: (i32, i32, u32, u32)) {
     let (ox, oy, w, h) = cover;
@@ -301,9 +301,9 @@ fn dist_to_seg(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
 /// Paint the "armed" cue on a held book cell once the hold crosses the long-press
 /// threshold: a solid dark badge with a light download glyph, centered on the
 /// cover region. Drawn over the press outline, which stays, so the tile reads as
-/// "held long enough — downloading now" in one partial refresh; the cover stays
-/// visible around the badge. The post-action repaint clears it. `(cell_x, cell_y)` is the on-screen cell origin
-/// (see [`cell_xy`]); off-screen no-ops.
+/// "held long enough — running now" in one partial refresh; the cover stays
+/// visible around the badge. The post-action repaint clears it. `(cell_x,
+/// cell_y)` is the on-screen cell origin (see [`cell_xy`]); off-screen no-ops.
 pub fn draw_arm_cue(fb: &mut Framebuffer, cell_x: i32, cell_y: i32, cell_h: u32) {
     if cell_x < 0 || cell_y < 0 {
         return;
@@ -348,9 +348,9 @@ pub fn outline_rect(
 }
 
 /// Stroke a **rounded-rectangle** border (`thickness` px, corner `radius`) in
-/// `shade` — the search field's pill/box frame. `radius == h/2` gives a full
-/// pill (Amazon-style); a smaller radius gives rounded corners. The straight
-/// edges are `fill_rect`s between the four quarter-circle corner arcs.
+/// `shade`. `radius == h/2` gives a full pill; a smaller radius gives rounded
+/// corners. The straight edges are `fill_rect`s between the four quarter-circle
+/// corner arcs.
 #[allow(clippy::too_many_arguments)] // positional geometry; a struct just moves the list
 pub fn stroke_round_rect(
     fb: &mut Framebuffer,
@@ -404,7 +404,7 @@ fn corner_arc(fb: &mut Framebuffer, cx: i32, cy: i32, r: u32, t: u32, shade: u8,
 }
 
 /// Draw a magnifier glyph (a ring + a lower-right diagonal handle) centered at
-/// `(cx, cy)` with lens radius `r`. The font has no 🔍, so we draw it.
+/// `(cx, cy)` with lens radius `r`. The font has no 🔍, so it is drawn here.
 pub fn draw_magnifier(fb: &mut Framebuffer, cx: i32, cy: i32, r: u32, shade: u8) {
     const T: u32 = 3;
     let rf = r as f32;
@@ -431,8 +431,7 @@ pub fn draw_magnifier(fb: &mut Framebuffer, cx: i32, cy: i32, r: u32, shade: u8)
     }
 }
 
-/// Draw an `✕` (two diagonals) centered at `(cx, cy)`, half-extent `size` — the
-/// search field's clear button.
+/// Draw an `✕` (two diagonals) centered at `(cx, cy)`, half-extent `size`.
 pub fn draw_x(fb: &mut Framebuffer, cx: i32, cy: i32, size: i32, shade: u8) {
     for i in -size..=size {
         for k in 0..2 {
@@ -445,7 +444,7 @@ pub fn draw_x(fb: &mut Framebuffer, cx: i32, cy: i32, size: i32, shade: u8) {
 /// Draw a **sync** glyph — two arced arrows chasing round a circle (the refresh
 /// pair) — centered at `(cx, cy)` with ring radius `r`. Two arcs with a gap at
 /// each end, each gap capped by a small tangential arrowhead so the ring reads as
-/// rotating. The font has no 🔄, so we draw it. Top-bar Sync button.
+/// rotating. The font has no 🔄, so it is drawn here.
 pub fn draw_sync_glyph(fb: &mut Framebuffer, cx: i32, cy: i32, r: i32, shade: u8) {
     const T: i32 = 5;
     let rf = r as f32;
@@ -512,7 +511,7 @@ fn fill_tri(fb: &mut Framebuffer, a: (f32, f32), b: (f32, f32), c: (f32, f32), s
 
 /// Draw a **download** glyph — a vertical stem, a solid down-arrowhead, and a
 /// tray line beneath — centered at `(cx, cy)`, scale `s`. The font has no ⤓, so
-/// we draw it. Top-bar Update button (pull the next picker binary over the LAN).
+/// it is drawn here. [`draw_arm_cue`] puts it on a held cell.
 pub fn draw_download_glyph(fb: &mut Framebuffer, cx: i32, cy: i32, s: i32, shade: u8) {
     const T: i32 = 5;
     let stem_h = s + s / 4;
@@ -543,8 +542,7 @@ pub fn draw_download_glyph(fb: &mut Framebuffer, cx: i32, cy: i32, s: i32, shade
 
 /// Draw a **key** glyph — a ring bow on the left, a horizontal shaft, and two
 /// teeth dropping off its tip — centered at `(cx, cy)`, scale `s`. The font has
-/// no 🔑, so we draw it. The DRM view's right-hand action button (decrypt every
-/// purchase); the library view draws [`draw_download_glyph`] in that slot.
+/// no 🔑, so it is drawn here.
 pub fn draw_key_glyph(fb: &mut Framebuffer, cx: i32, cy: i32, s: i32, shade: u8) {
     const T: i32 = 5;
     // Bow: a ring on the left, a hair inside where the shaft meets it.
@@ -643,8 +641,8 @@ fn draw_cover_tile(
 /// above a name band carrying the book title — the same layout as a series tile
 /// minus the stack bars and count badge, so books and collections line up in
 /// the grid. A missing cover falls back to a light placeholder + the title.
-/// Self-contained (clears its own cell) for both the initial paint and the
-/// per-cover refresh in `main.rs`. Returns the painted cover rect, which is the
+/// Self-contained (clears its own cell) for both the initial paint and
+/// `app::fill_covers`. Returns the painted cover rect, which is the
 /// letterboxed artwork rather than the cell — [`draw_downloaded_badge`] pins
 /// its corner to that, so the mark lands on the cover and not in the margin
 /// beside a narrow one.
@@ -800,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_is_centred_between_the_search_bar_and_the_strip() {
+    fn the_grid_is_centred_between_the_header_band_and_the_strip() {
         // Colorsoft geometry, as the device actually reports it.
         let (xres, yres, top_margin, strip_h) = (1272, 1696, 120, 80);
         let l = Layout::compute(xres, yres, top_margin, strip_h);
@@ -816,7 +814,7 @@ mod tests {
         );
         assert!(
             l.top > top_margin as i32,
-            "top-anchored again: the grid crowds the search bar"
+            "top-anchored: the grid crowds the header band"
         );
         // Even split, give or take the odd pixel.
         assert!(above.abs_diff(below) <= 1, "above={above} below={below}");

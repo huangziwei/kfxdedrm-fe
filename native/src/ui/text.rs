@@ -115,7 +115,7 @@ impl TextRenderer {
     /// whitespace; CJK titles (no spaces) fall through to char-level wrap
     /// so they pack densely without overflowing the box. Thin font-backed
     /// wrapper over [`crate::wrap::wrap_and_clamp`]; shared by the cover
-    /// placeholder and the diagnostics panel.
+    /// placeholder and [`crate::ui::setup`].
     pub fn wrap_and_clamp(&mut self, text: &str, max_width: u32, max_lines: usize) -> Vec<String> {
         self.wrap_and_clamp_in(font::Script::Unknown, text, max_width, max_lines)
     }
@@ -152,7 +152,7 @@ impl TextRenderer {
     }
 
     /// [`TextRenderer::draw`] for text whose language is known — a book title
-    /// from a tagged book, rather than the picker's own chrome.
+    /// from a tagged book, rather than the app's own chrome.
     ///
     /// The hint decides which face is *tried* first, not which one draws:
     /// coverage still has the last word, so a book tagged with the wrong

@@ -33,6 +33,11 @@ pub struct Config {
     pub types_mobi: bool,
     /// `engine::decrypt`'s out-folder argument.
     pub out_dir: PathBuf,
+    /// Merge the engine's `.kfx-zip` into a `.kfx` beside it. Needs the
+    /// `crate::convert` add-on; without it `convert::Targets` reads it as off.
+    pub pack_kfx: bool,
+    /// Write a `.epub` beside it. Same add-on, same fallback.
+    pub convert_epub: bool,
     /// Keep `Book::done` entries in the grid.
     pub show_done: bool,
 }
@@ -45,6 +50,9 @@ impl Default for Config {
             types_kfx: true,
             types_mobi: true,
             out_dir: PathBuf::from(DEFAULT_OUT_DIR),
+            // Off: the add-on the two of them run is not part of this install.
+            pack_kfx: false,
+            convert_epub: false,
             show_done: true,
         }
     }
@@ -97,6 +105,8 @@ impl Config {
                 }
                 "types_kfx" => cfg.types_kfx = parse_bool(value).unwrap_or(cfg.types_kfx),
                 "types_mobi" => cfg.types_mobi = parse_bool(value).unwrap_or(cfg.types_mobi),
+                "pack_kfx" => cfg.pack_kfx = parse_bool(value).unwrap_or(cfg.pack_kfx),
+                "convert_epub" => cfg.convert_epub = parse_bool(value).unwrap_or(cfg.convert_epub),
                 "show_done" => cfg.show_done = parse_bool(value).unwrap_or(cfg.show_done),
                 "out_dir" if !value.is_empty() => cfg.out_dir = PathBuf::from(value),
                 _ => {}
@@ -127,6 +137,13 @@ types_mobi = {}
 # Where decrypted books are written. Passed to the engine as its out folder.
 out_dir = {}
 
+# Extra formats, written into out_dir beside the engine's own output. Both
+# need the bokai add-on at {}; without it they are ignored.
+#   pack_kfx      merge the .kfx-zip bundle into one .kfx container
+#   convert_epub  convert the book to .epub
+pack_kfx = {}
+convert_epub = {}
+
 # Keep finished books in the grid, marked with a check.
 show_done = {}
 ",
@@ -135,6 +152,9 @@ show_done = {}
             self.types_kfx,
             self.types_mobi,
             self.out_dir.display(),
+            crate::convert::EXTENSION_DIR,
+            self.pack_kfx,
+            self.convert_epub,
             self.show_done,
         )
     }
@@ -185,6 +205,8 @@ mod tests {
             types_kfx: true,
             types_mobi: false,
             out_dir: PathBuf::from("/mnt/us/documents/dedrm"),
+            pack_kfx: true,
+            convert_epub: true,
             show_done: false,
         };
         assert_eq!(Config::parse(&cfg.render()), cfg);
@@ -203,10 +225,13 @@ mod tests {
              types_kfx = maybe\n\
              types_mobi\n\
              nonsense = true\n\
+             convert_epub = 1\n\
              show_done=OFF\n",
         );
         assert!(!cfg.scan_items01); // read
         assert!(!cfg.show_done); // read, tolerant of spelling and spacing
+        assert!(cfg.convert_epub); // read
+        assert!(!cfg.pack_kfx); // absent -> default
         assert!(cfg.types_kfx); // unparseable value -> default
         assert!(cfg.types_mobi); // no `=` at all -> default
         assert_eq!(cfg.out_dir, Path::new(DEFAULT_OUT_DIR)); // absent -> default

@@ -143,14 +143,12 @@ pub fn draw_download(
     (banner_rect, cancel_rect)
 }
 
-/// Terminal state of the live download overlay. Reuses [`draw_download`]'s
-/// banner footprint (same width, height, position) so it paints directly over
-/// the running progress/Cancel overlay and leaves none of its edges behind —
-/// the "Downloaded"/"Failed" result and the live overlay are one banner in one
-/// place, not a smaller toast stacked inside the taller one. `message` is
-/// centered as a block, one row per `\n`-delimited line (so multi-line results
-/// like the token-mismatch hint read as real lines, not a stray glyph), with no
-/// Cancel button. Returns the banner's dirty rect.
+/// The banner a finished run ends on. Reuses [`draw_download`]'s footprint
+/// (same width, height, position) so it paints directly over whichever taller
+/// overlay was running and leaves none of its edges behind — the result and the
+/// live overlay are one banner in one place, not a smaller toast stacked inside
+/// the taller one. `message` is centered as a block, one row per `\n`-delimited
+/// line, with no button. Returns the banner's dirty rect.
 pub fn draw_download_done(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,

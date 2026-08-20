@@ -7,6 +7,10 @@
 //! receives into `Config::out_dir`, and a DRM-free book yields a second copy
 //! of itself.
 //!
+//! `Book::done` waits on every file `Config::out_dir` should hold for that
+//! book — `convert::Targets` included — so a conversion that failed leaves the
+//! book listed for another run.
+//!
 //! `Book::title` and `Book::cover_path` come from the filename and
 //! [`THUMBNAILS_DIR`]. No book is opened.
 
@@ -14,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
+use crate::convert::Targets;
 use crate::engine::{self, Format};
 use crate::mobi;
 
@@ -37,21 +42,22 @@ pub struct Book {
     pub size: u64,
     /// Sort key within a root, newest first.
     pub mtime: SystemTime,
-    /// `engine::output_path` exists under `Config::out_dir`.
+    /// Every output under `Config::out_dir` exists — `engine::output_path`
+    /// and each `convert::Targets` step's.
     pub done: bool,
 }
 
 /// [`scan_in`] over `Config::scan_roots` and [`THUMBNAILS_DIR`].
-pub fn scan(cfg: &Config) -> Vec<Book> {
-    scan_in(&cfg.scan_roots(), cfg, Path::new(THUMBNAILS_DIR))
+pub fn scan(cfg: &Config, targets: Targets) -> Vec<Book> {
+    scan_in(&cfg.scan_roots(), cfg, targets, Path::new(THUMBNAILS_DIR))
 }
 
 /// [`Book`] entries across `roots`, covers taken from `thumbs`.
-pub fn scan_in(roots: &[PathBuf], cfg: &Config, thumbs: &Path) -> Vec<Book> {
+pub fn scan_in(roots: &[PathBuf], cfg: &Config, targets: Targets, thumbs: &Path) -> Vec<Book> {
     let mut out = Vec::new();
     // `roots` order, `mtime` descending within each.
     for root in roots {
-        let mut found = scan_root(root, cfg, thumbs);
+        let mut found = scan_root(root, cfg, targets, thumbs);
         found.sort_by_key(|b| std::cmp::Reverse(b.mtime));
         out.append(&mut found);
     }
@@ -59,19 +65,19 @@ pub fn scan_in(roots: &[PathBuf], cfg: &Config, thumbs: &Path) -> Vec<Book> {
 }
 
 /// [`candidate`] over one directory's entries.
-fn scan_root(root: &Path, cfg: &Config, thumbs: &Path) -> Vec<Book> {
+fn scan_root(root: &Path, cfg: &Config, targets: Targets, thumbs: &Path) -> Vec<Book> {
     // Each root is optional on any one device.
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
     entries
         .flatten()
-        .filter_map(|e| candidate(&e.path(), cfg, thumbs))
+        .filter_map(|e| candidate(&e.path(), cfg, targets, thumbs))
         .collect()
 }
 
 /// One [`Book`], or `None` for an entry that fails a gate.
-fn candidate(path: &Path, cfg: &Config, thumbs: &Path) -> Option<Book> {
+fn candidate(path: &Path, cfg: &Config, targets: Targets, thumbs: &Path) -> Option<Book> {
     let name = path.file_name()?.to_str()?;
     // AppleDouble shadows carry the name of a real file on a FAT partition.
     if name.starts_with("._") {
@@ -97,7 +103,8 @@ fn candidate(path: &Path, cfg: &Config, thumbs: &Path) -> Option<Book> {
     }
 
     // `Config::show_done` keeps or drops these.
-    let done = engine::output_path(path, &cfg.out_dir).is_some_and(|p| p.exists());
+    let done = engine::output_path(path, &cfg.out_dir)
+        .is_some_and(|out| out.exists() && targets.outputs(&out).iter().all(|p| p.exists()));
     if done && !cfg.show_done {
         return None;
     }

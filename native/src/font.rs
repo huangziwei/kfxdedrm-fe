@@ -269,7 +269,7 @@ impl FontChain {
     /// character misses.
     ///
     /// Fails only when none of them loads. A firmware that has moved or
-    /// dropped one face is not a reason to refuse to start — the picker draws
+    /// dropped one face is not a reason to refuse to start — the app draws
     /// with whatever it finds, and only an empty chain has nothing to say.
     pub fn load(candidates: &[Candidate]) -> Result<Self> {
         // Existence is settled here, parsing is not: a stat per candidate is
@@ -384,8 +384,8 @@ impl FontChain {
 }
 
 /// Whether `font` can draw `ch` at all. Glyph 0 is `.notdef`, which is what a
-/// face hands back for a character it doesn't have — asking for it is how the
-/// tofu got drawn in the first place.
+/// face hands back for a character it doesn't have, so a caller that skips this
+/// check rasterizes tofu.
 pub fn has_glyph(font: &FontVec, ch: char) -> bool {
     font.glyph_id(ch).0 != 0
 }
@@ -472,16 +472,17 @@ mod tests {
 
     #[test]
     fn control_characters_never_reach_the_rasterizer() {
-        // A banner message joins its clauses with `\n`. No face has U+000A, so
-        // a newline that got this far both drew the missing-glyph box and, by
-        // missing everywhere, dropped the rest of the line to per-character
-        // resolution. The layout consumes it; the renderer skips whatever is
-        // left, here and for any other control that rides in on metadata.
+        // A banner message joins its clauses with `\n`, and no face has
+        // U+000A: a newline reaching the renderer would draw the missing-glyph
+        // box and, by missing everywhere, drop the rest of the line to
+        // per-character resolution. The layout consumes it; the renderer skips
+        // whatever is left, here and for any other control that rides in on
+        // metadata.
         for c in ['\n', '\r', '\t', '\u{0}', '\u{7F}', '\u{85}'] {
             assert!(is_invisible(c), "{c:?} would draw as a box");
         }
-        // Nothing in the chain has one, which is the whole damage: the box got
-        // drawn, and the miss also pushed the rest of the run off its face.
+        // Nothing in the chain has one, so it costs twice: the box is drawn,
+        // and the miss pushes the rest of the run off its face.
         let faces = ["Synced 3", "汉字"];
         assert_eq!(face_with('\n', unhinted(&faces), repertoires(&faces)), None);
         assert_eq!(
@@ -586,9 +587,9 @@ mod tests {
             faces[0], "Amazon-Ember-Regular.ttf",
             "the device's UI typeface, upright and regular, must draw the UI"
         );
-        // The traps, each of which beat Regular under an earlier ranking:
-        // a bold family whose cut is named "Regular", and two weights with no
-        // bold-ish token in the name at all.
+        // The traps a plain token search falls into: a bold family whose cut
+        // is named "Regular", and two weights with no bold-ish token in the
+        // name at all.
         for trap in [
             "AmazonEmberBold-Regular.ttf",
             "Amazon-Ember-Heavy.ttf",

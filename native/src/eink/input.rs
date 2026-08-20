@@ -38,7 +38,7 @@ pub enum InputEvent {
 
 pub struct Input {
     touch: Touch,
-    /// `None` when no page-button device was found/openable — the picker runs
+    /// `None` when no page-button device was found/openable — the app runs
     /// touch-only and `poll` watches just the touchscreen.
     buttons: Option<Buttons>,
 }
@@ -67,9 +67,9 @@ impl Input {
     /// Non-blocking check for a pending event (zero-timeout `poll`). Returns
     /// the first ready event, or `None` if neither device has a complete event
     /// right now. Unlike [`next`](Self::next) it never blocks and never
-    /// surfaces `Tick` — the blocking flows (download, decrypt) call it
-    /// between their blocking steps to notice a Cancel tap, bezel press, or
-    /// screenshot gesture without stalling the work. A partial touch stroke
+    /// surfaces `Tick` — the blocking flows call it between their blocking
+    /// steps to notice a button tap, bezel press, or screenshot gesture
+    /// without stalling the work. A partial touch stroke
     /// reads as `None` and is caught on a later call.
     pub fn poll_now(&mut self) -> Result<Option<InputEvent>> {
         let touch_fd: RawFd = self.touch.raw_fd();
@@ -93,9 +93,9 @@ impl Input {
             return Ok(None);
         }
         // Touch first, unlike `next` (which prioritizes bezel presses for
-        // navigation). The callers are blocking flows (download, decrypt),
-        // where the touch fd carries both the Cancel button and the two-corner
-        // screenshot gesture. Checking buttons first would let a stale/None
+        // navigation). The callers are blocking flows, where the touch fd
+        // carries both the Stop button and the two-corner screenshot gesture.
+        // Checking buttons first would let a stale/None
         // button read return early and *shadow* a pending touch event,
         // stalling the gesture until the main loop resumes.
         if fds[0].revents & libc::POLLIN != 0
@@ -130,8 +130,7 @@ impl Input {
     /// the timeout is the *remaining* time to the absolute `deadline` (recomputed
     /// each iteration, never reset by a move-drain), and a top-of-loop check
     /// returns `Tick` once we're at/past it regardless of pending moves. With
-    /// `deadline == None` this is the original behaviour: a plain [`TICK_MS`]
-    /// idle tick.
+    /// `deadline == None` the timeout is a plain [`TICK_MS`] idle tick.
     ///
     /// Button presses are checked first each wake: a press is a deliberate
     /// navigation intent, and draining it promptly keeps the grabbed device's

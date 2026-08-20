@@ -36,10 +36,9 @@ const EVENT_BYTES: usize = 16;
 // value fits both.
 const EVIOCGRAB: libc::c_int = 0x40044590;
 
-/// Which bezel button fired. Hardware-confirmed KOA2 mapping: top button
-/// (`KEY_PAGEUP`) → `Next`, bottom button (`KEY_PAGEDOWN`) → `Prev` — top pages
-/// forward. See the keycode match in
-/// [`Buttons::read_one`].
+/// Which bezel button fired. The KOA2 mapping is top button (`KEY_PAGEUP`) →
+/// `Next`, bottom button (`KEY_PAGEDOWN`) → `Prev` — top pages forward. See the
+/// keycode match in [`Buttons::read_one`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageButton {
     Prev,
@@ -59,8 +58,8 @@ pub struct Buttons {
 
 impl Buttons {
     /// Open and grab the page-button device. `Ok(None)` when no `gpio-keys`
-    /// device exists (a different Kindle generation / firmware) — the picker
-    /// runs on touch alone, without bezel navigation.
+    /// device exists (a different Kindle generation / firmware) — the app runs
+    /// on touch alone, without bezel navigation.
     pub fn open() -> Result<Option<Self>> {
         let Some(path) = find_button_device()? else {
             return Ok(None);
@@ -102,10 +101,10 @@ impl Buttons {
         let value = i32::from_ne_bytes([buf[12], buf[13], buf[14], buf[15]]);
         if type_ == EV_KEY && value == 1 {
             let btn = match code {
-                // Hardware-confirmed on KOA2: the *top* button emits
-                // KEY_PAGEUP and the *bottom* emits KEY_PAGEDOWN, and a reader
-                // reads top = forward. So top/PAGEUP → Next, bottom/PAGEDOWN →
-                // Prev (the opposite of the keycodes' literal names).
+                // On the KOA2 the *top* button emits KEY_PAGEUP and the
+                // *bottom* emits KEY_PAGEDOWN, and a reader reads top =
+                // forward. So top/PAGEUP → Next, bottom/PAGEDOWN → Prev — the
+                // opposite of the keycodes' literal names.
                 KEY_PAGEUP => Some(PageButton::Next),
                 KEY_PAGEDOWN => Some(PageButton::Prev),
                 _ => None,

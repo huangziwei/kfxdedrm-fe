@@ -2,7 +2,9 @@
 //! as a blocking overlay. A held cover runs [`decrypt_one`]; the toolbar runs
 //! [`decrypt_all`].
 //!
-//! [`engine::locate`] failing ends the launch at [`ui::setup`].
+//! [`engine::locate`] failing ends the launch at [`ui::setup`]. [`convert::locate`]
+//! failing costs nothing: `convert::Targets` reads as empty and [`convert_outputs`]
+//! plans no step.
 //!
 //! No path under `[config::DOCUMENTS_DIR]` is written, moved or removed.
 
@@ -13,6 +15,7 @@ use std::time::{Duration, Instant};
 use image::DynamicImage;
 
 use crate::config::{self, Config};
+use crate::convert::{self, Converter, Targets};
 use crate::eink;
 use crate::eink::buttons::{Buttons, PageButton};
 use crate::eink::fb::{Framebuffer, MxcfbRect, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
@@ -335,24 +338,234 @@ fn settle_output(book: &Book, out_dir: &Path) -> bool {
     }
 }
 
-/// One `engine::decrypt` run, its stdout streamed into a banner.
+/// How a [`convert_outputs`] step announces itself. The two callers want
+/// different banners and only one of them has a button to keep alive.
+enum StepBanner<'a> {
+    /// [`decrypt_one`]: the book's title over the step line.
+    One(&'a str),
+    /// [`decrypt_all`]: the batch bar, its Stop button live across the step.
+    ///
+    /// The banner is redrawn per step, so the button has to be redrawn with
+    /// it or a tap would land on a control that is no longer there.
+    Batch {
+        /// Position in the batch, for the bar.
+        done: usize,
+        total: usize,
+        /// Set by a tap on the button. `decrypt_all` reads it after the book.
+        stopping: &'a mut bool,
+    },
+}
+
+/// `targets`'s steps over `decrypted`, each run to its own exit.
 ///
-/// Returns the banner message and whether [`settle_output`] found the file. A
-/// zero exit with no file reports as a failure.
+/// Returns the `convert::Kind`s that failed, empty being the good case. A step
+/// whose output is already there is skipped, so a book listed only for a
+/// missing EPUB does not repack its KFX first.
+fn convert_outputs(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+    conv: &Converter,
+    targets: Targets,
+    decrypted: &Path,
+    banner: &mut StepBanner,
+) -> anyhow::Result<Vec<convert::Kind>> {
+    let mut failed = Vec::new();
+    for step in targets.steps(decrypted) {
+        if step.output.exists() {
+            continue;
+        }
+        // The EPUB step reads the KFX step's output; a failure upstream leaves
+        // nothing to open.
+        if !step.input.exists() {
+            log(format!(
+                "convert {}: no input at {}",
+                step.kind.label(),
+                step.input.display()
+            ));
+            failed.push(step.kind);
+            continue;
+        }
+
+        // Cleared by the tap that takes it: `draw_progress` below drops the
+        // button, and a second tap on the same spot must not re-announce.
+        let mut stop_rect = draw_step_banner(fb, renderer, banner, step.kind)?;
+
+        let status = match conv.convert(&step).spawn() {
+            Ok(mut child) => loop {
+                match child.try_wait() {
+                    Ok(Some(s)) => break Ok(s),
+                    Ok(None) => {}
+                    Err(e) => break Err(e),
+                }
+                match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
+                    InputEvent::Tick => {}
+                    // Same contract as the engine wait: the child runs to its
+                    // own exit and the batch ends after this book.
+                    InputEvent::Touch(TouchEvent::Up { x, y })
+                        if stop_rect.is_some_and(|r| toast::contains(r, x, y)) =>
+                    {
+                        if let StepBanner::Batch {
+                            done,
+                            total,
+                            stopping,
+                        } = banner
+                        {
+                            **stopping = true;
+                            log("batch: stop requested");
+                            // Dropping the button marks the tap.
+                            let rect = toast::draw_progress(
+                                fb,
+                                renderer,
+                                "Stopping after this book…",
+                                *done,
+                                *total,
+                            );
+                            fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+                        }
+                        stop_rect = None;
+                    }
+                    ev => decrypt_input_event(fb, ev),
+                }
+            },
+            Err(e) => Err(e),
+        };
+
+        let ok = matches!(status, Ok(ref s) if s.success()) && step.output.exists();
+        log(format!(
+            "convert {} {} -> {} exit={status:?} ok={ok}",
+            step.kind.label(),
+            step.input.display(),
+            step.output.display()
+        ));
+        if !ok {
+            // A half-written file reads as a finished one on the next scan,
+            // and would be handed to the step after it as an input.
+            if let Err(e) = remove_if_present(&step.output) {
+                log(format!("cleanup {}: {e}", step.output.display()));
+            }
+            failed.push(step.kind);
+        }
+    }
+    Ok(failed)
+}
+
+/// The banner one [`convert_outputs`] step runs under, and the Stop button's
+/// hit rect while there is one.
+///
+/// [`StepBanner::Batch`] gives its one title line to the step rather than the
+/// book: the count and the bar already say which book this is. Both footprints
+/// match `toast::draw_download_done`, which every caller ends on, so the
+/// result banner covers whichever of them was last on the panel.
+fn draw_step_banner(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    banner: &StepBanner,
+    kind: convert::Kind,
+) -> anyhow::Result<Option<MxcfbRect>> {
+    let (rect, stop_rect) = match banner {
+        StepBanner::One(title) => (
+            toast::draw_download_done(fb, renderer, &format!("{title}\n{}", kind.progress())),
+            None,
+        ),
+        // A batch already asked to stop keeps the bar and loses the button.
+        StepBanner::Batch {
+            done,
+            total,
+            stopping,
+        } if **stopping => (
+            toast::draw_progress(fb, renderer, kind.progress(), *done, *total),
+            None,
+        ),
+        StepBanner::Batch { done, total, .. } => {
+            let (rect, stop) =
+                toast::draw_progress_stop(fb, renderer, kind.progress(), *done, *total);
+            (rect, Some(stop))
+        }
+    };
+    fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    Ok(stop_rect)
+}
+
+/// `remove_file`, with an already-absent path reading as success.
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// The second banner line after a decrypt that produced its file.
+fn result_line(failed: &[convert::Kind]) -> String {
+    match failed {
+        [] => "Decrypted".to_string(),
+        [one] => format!("Decrypted, no {} — see the log", one.label()),
+        many => format!("Decrypted, {} conversions failed", many.len()),
+    }
+}
+
+/// One `engine::decrypt` run, its stdout streamed into a banner, then
+/// [`convert_outputs`] over what it wrote.
+///
+/// Returns the banner message and whether every output the settings ask for is
+/// now there. A zero exit with no file reports as a failure.
 ///
 /// [`read_lines`] owns stdout; the loop waits on `input` at [`ENGINE_POLL`].
 ///
 /// `Engine` prints nothing while a book decrypts, leaving `read_line` blocked
 /// and the touch fd unpolled for that whole stretch.
+#[allow(clippy::too_many_arguments)]
 fn decrypt_one(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+    eng: &Engine,
+    conv: Option<&Converter>,
+    targets: Targets,
+    cfg: &Config,
+    book: &Book,
+) -> anyhow::Result<(String, bool)> {
+    let short = short_title(&book.title, 34);
+
+    // Already decrypted, only the conversions left: `scan::Book::done` counts
+    // those, so a book with a finished decrypt behind it still reaches here.
+    // The engine has nothing to do for it.
+    if !settle_output(book, &cfg.out_dir) {
+        if let Some(msg) = run_engine(fb, renderer, input, eng, cfg, book, &short)? {
+            return Ok((msg, false));
+        }
+        if !settle_output(book, &cfg.out_dir) {
+            return Ok((
+                format!("{short}\nEngine finished, but wrote no file"),
+                false,
+            ));
+        }
+    } else {
+        log(format!("already decrypted: {}", book.path.display()));
+    }
+
+    let failed = match (conv, engine::output_path(&book.path, &cfg.out_dir)) {
+        (Some(c), Some(out)) => {
+            let mut banner = StepBanner::One(&short);
+            convert_outputs(fb, renderer, input, c, targets, &out, &mut banner)?
+        }
+        _ => Vec::new(),
+    };
+    let ok = failed.is_empty();
+    Ok((format!("{short}\n{}", result_line(&failed)), ok))
+}
+
+/// The `engine::decrypt` half of [`decrypt_one`], stdout streamed into a
+/// banner. `Some` carries the banner message for a run that failed.
+fn run_engine(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
     input: &mut Input,
     eng: &Engine,
     cfg: &Config,
     book: &Book,
-) -> anyhow::Result<(String, bool)> {
-    let short = short_title(&book.title, 34);
+    short: &str,
+) -> anyhow::Result<Option<String>> {
     // Two lines here and in the result banner: equal `toast::draw` footprints.
     let rect = toast::draw(fb, renderer, &format!("{short}\nStarting…"));
     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
@@ -365,7 +578,7 @@ fn decrypt_one(
         Ok(c) => c,
         Err(e) => {
             log(format!("spawn failed: {e}"));
-            return Ok((format!("{short}\nCould not start the engine"), false));
+            return Ok(Some(format!("{short}\nCould not start the engine")));
         }
     };
 
@@ -408,30 +621,26 @@ fn decrypt_one(
         book.path.display()
     ));
     if !matches!(status, Ok(ref s) if s.success()) {
-        return Ok((format!("{short}\nFailed — see the log"), false));
+        return Ok(Some(format!("{short}\nFailed — see the log")));
     }
-
-    if settle_output(book, &cfg.out_dir) {
-        Ok((format!("{short}\nDecrypted"), true))
-    } else {
-        // `scan` drops books whose output exists, leaving the engine's own
-        // skip path unreached here.
-        Ok((
-            format!("{short}\nEngine finished, but wrote no file"),
-            false,
-        ))
-    }
+    Ok(None)
 }
 
-/// One `engine::decrypt` run per `books` entry with `done` false.
+/// One `engine::decrypt` run per `books` entry with `done` false, each
+/// followed by [`convert_outputs`].
 ///
 /// `Touch` holds an `EVIOCGRAB`: an unpolled fd queues every gesture for the
-/// length of a book. A failed run leaves the loop going.
+/// length of a book. A failed run leaves the loop going, and a book whose
+/// conversions failed counts against the summary the way a failed decrypt
+/// does — `scan::Book::done` reads both the same way.
+#[allow(clippy::too_many_arguments)]
 fn decrypt_all(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
     input: &mut Input,
     eng: &Engine,
+    conv: Option<&Converter>,
+    targets: Targets,
     cfg: &Config,
     books: &[Book],
 ) -> anyhow::Result<String> {
@@ -442,52 +651,75 @@ fn decrypt_all(
 
     let mut stopping = false;
     for (i, book) in todo.iter().enumerate() {
-        // Drawn before the run: the bar carries `i`, the title carries `book`.
-        let (rect, stop_rect) =
-            toast::draw_progress_stop(fb, renderer, &short_title(&book.title, 30), i, total);
+        let short = short_title(&book.title, 30);
+        // Drawn before the book's work: the bar carries `i`, the title
+        // carries `book`.
+        let (rect, stop_rect) = toast::draw_progress_stop(fb, renderer, &short, i, total);
         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
 
-        // Inherited stdio, no pipe to drain. The wait blocks in
-        // `next_deadline`: a gesture wakes it, an idle tick bounds the exit
-        // check at [`ENGINE_POLL`].
-        let status = match eng.decrypt(&book.path, &cfg.out_dir).spawn() {
-            Ok(mut child) => loop {
-                match child.try_wait() {
-                    Ok(Some(s)) => break Ok(s),
-                    Ok(None) => {}
-                    Err(e) => break Err(e),
-                }
-                match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
-                    InputEvent::Tick => {}
-                    // `child` runs to its own exit; the loop ends after it.
-                    InputEvent::Touch(TouchEvent::Up { x, y })
-                        if !stopping && toast::contains(stop_rect, x, y) =>
-                    {
-                        stopping = true;
-                        log("batch: stop requested");
-                        // `draw_progress` drops the button, marking the tap.
-                        let rect = toast::draw_progress(
-                            fb,
-                            renderer,
-                            "Stopping after this book…",
-                            i,
-                            total,
-                        );
-                        fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+        // Already decrypted, only the conversions left — see [`decrypt_one`].
+        let mut ok = settle_output(book, &cfg.out_dir);
+        if ok {
+            log(format!(
+                "batch {}/{}: already decrypted {}",
+                i + 1,
+                total,
+                book.path.display()
+            ));
+        } else {
+            let status = match eng.decrypt(&book.path, &cfg.out_dir).spawn() {
+                Ok(mut child) => loop {
+                    match child.try_wait() {
+                        Ok(Some(s)) => break Ok(s),
+                        Ok(None) => {}
+                        Err(e) => break Err(e),
                     }
-                    ev => decrypt_input_event(fb, ev),
-                }
-            },
-            Err(e) => Err(e),
-        };
+                    match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
+                        InputEvent::Tick => {}
+                        // `child` runs to its own exit; the loop ends after it.
+                        InputEvent::Touch(TouchEvent::Up { x, y })
+                            if !stopping && toast::contains(stop_rect, x, y) =>
+                        {
+                            stopping = true;
+                            log("batch: stop requested");
+                            // `draw_progress` drops the button, marking the tap.
+                            let rect = toast::draw_progress(
+                                fb,
+                                renderer,
+                                "Stopping after this book…",
+                                i,
+                                total,
+                            );
+                            fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+                        }
+                        ev => decrypt_input_event(fb, ev),
+                    }
+                },
+                Err(e) => Err(e),
+            };
 
-        let ok = matches!(status, Ok(ref s) if s.success()) && settle_output(book, &cfg.out_dir);
-        log(format!(
-            "batch {}/{}: {} exit={status:?} ok={ok}",
-            i + 1,
-            total,
-            book.path.display()
-        ));
+            ok = matches!(status, Ok(ref s) if s.success()) && settle_output(book, &cfg.out_dir);
+            log(format!(
+                "batch {}/{}: {} exit={status:?} ok={ok}",
+                i + 1,
+                total,
+                book.path.display()
+            ));
+        }
+
+        if ok
+            && let Some(c) = conv
+            && let Some(out) = engine::output_path(&book.path, &cfg.out_dir)
+        {
+            let mut banner = StepBanner::Batch {
+                done: i,
+                total,
+                stopping: &mut stopping,
+            };
+            let failed = convert_outputs(fb, renderer, input, c, targets, &out, &mut banner)?;
+            ok = failed.is_empty();
+        }
+
         if ok {
             done += 1;
         } else {
@@ -571,11 +803,21 @@ pub fn run() -> anyhow::Result<()> {
         }
     };
 
+    // ---- The converter ------------------------------------------------------
+    // An add-on. Nothing here fails without it; `convert::Targets` reads both
+    // switches as off and the app decrypts and stops there.
+    let converter = convert::locate();
+    match &converter {
+        Some(c) => log(format!("converter: {}", c.exe().display())),
+        None => log(format!("converter: none at {}", convert::BIN_PATH)),
+    }
+
     // ---- Settings + first scan ---------------------------------------------
     let cfg_path = config_path();
     let mut cfg = Config::load(&cfg_path);
+    let mut targets = Targets::new(&cfg, converter.as_ref());
     log(format!(
-        "settings: roots={:?} kfx={} mobi={} out={} show_done={}",
+        "settings: roots={:?} kfx={} mobi={} out={} show_done={} targets={targets:?}",
         cfg.scan_roots(),
         cfg.types_kfx,
         cfg.types_mobi,
@@ -583,7 +825,7 @@ pub fn run() -> anyhow::Result<()> {
         cfg.show_done
     ));
 
-    let mut books = scan::scan(&cfg);
+    let mut books = scan::scan(&cfg, targets);
     let mut covers: Vec<Option<DynamicImage>> = vec![None; books.len()];
     log(format!(
         "scan: {} books, {} to decrypt",
@@ -621,7 +863,7 @@ pub fn run() -> anyhow::Result<()> {
     // does not carry over.
     macro_rules! rescan {
         () => {{
-            books = scan::scan(&cfg);
+            books = scan::scan(&cfg, targets);
             covers = vec![None; books.len()];
             log(format!(
                 "rescan: {} books, {} to decrypt",
@@ -707,11 +949,20 @@ pub fn run() -> anyhow::Result<()> {
                     Some(pager::PagerHit::Exit) => return Ok(()),
                     Some(pager::PagerHit::Settings) => {
                         let before = cfg.clone();
-                        configmenu::run(&mut fb, &mut input, &mut renderer, &mut cfg, &mut orient)?;
+                        configmenu::run(
+                            &mut fb,
+                            &mut input,
+                            &mut renderer,
+                            &mut cfg,
+                            &mut orient,
+                            converter.is_some(),
+                        )?;
                         if cfg != before {
                             if let Err(e) = cfg.store(&cfg_path) {
                                 log(format!("settings save failed: {e}"));
                             }
+                            // `Book::done` is read against these.
+                            targets = Targets::new(&cfg, converter.as_ref());
                             rescan!();
                             page = 0;
                         }
@@ -719,8 +970,16 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     Some(pager::PagerHit::DecryptAll) => {
                         // `pager::hit` returns `DecryptAll` only above zero `pending`.
-                        let msg =
-                            decrypt_all(&mut fb, &mut renderer, &mut input, &eng, &cfg, &books)?;
+                        let msg = decrypt_all(
+                            &mut fb,
+                            &mut renderer,
+                            &mut input,
+                            &eng,
+                            converter.as_ref(),
+                            targets,
+                            &cfg,
+                            &books,
+                        )?;
                         let rect = toast::draw_download_done(&mut fb, &mut renderer, &msg);
                         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
                         hold(&mut fb, &mut input, RESULT_LINGER)?;
@@ -799,8 +1058,16 @@ pub fn run() -> anyhow::Result<()> {
                     }
                     // `armed` is taken, leaving the eventual lift inert.
                     log(format!("decrypting {}", book.path.display()));
-                    let (msg, ok) =
-                        decrypt_one(&mut fb, &mut renderer, &mut input, &eng, &cfg, &book)?;
+                    let (msg, ok) = decrypt_one(
+                        &mut fb,
+                        &mut renderer,
+                        &mut input,
+                        &eng,
+                        converter.as_ref(),
+                        targets,
+                        &cfg,
+                        &book,
+                    )?;
                     log(format!("result: ok={ok} {}", msg.replace('\n', " — ")));
                     let rect = toast::draw_download_done(&mut fb, &mut renderer, &msg);
                     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
@@ -858,6 +1125,21 @@ mod tests {
         let src = include_str!("app.rs");
         assert_eq!(src.matches(blocking).count(), 0, "{blocking} bypasses hold");
         assert!(src.contains("fn hold("));
+    }
+
+    #[test]
+    fn the_result_line_names_a_conversion_that_did_not_land() {
+        assert_eq!(result_line(&[]), "Decrypted");
+        // One failure is worth naming; past that the log is the only place
+        // the banner could fit them.
+        assert_eq!(
+            result_line(&[convert::Kind::Epub]),
+            "Decrypted, no EPUB — see the log"
+        );
+        assert_eq!(
+            result_line(&[convert::Kind::Kfx, convert::Kind::Epub]),
+            "Decrypted, 2 conversions failed"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@
 # One armv7 musl binary covers the KOA2, Colorsoft and Scribe. The cross link
 # goes through rust-lld; see .cargo/config.toml.
 #
-# The kfxdedrm engine is a separate project and is not staged here.
+# The kfxdedrm engine and the bokai converter are separate projects and neither
+# is staged here.
 set -eu
 
 TARGET="armv7-unknown-linux-musleabihf"
@@ -71,6 +72,10 @@ cat <<'EOF'
 
 The kfxdedrm engine is NOT part of this and has to be installed separately at
 /mnt/us/extensions/kfxdedrm/ — the app's first screen says where to get it.
+
+Neither is bokai, which is optional: install it at /mnt/us/extensions/bokai/ and
+Settings can pack the decrypted bundle as .kfx and convert it to .epub. Without
+it those two settings do nothing, and Settings says where to get it.
 
 Decrypted books land in /mnt/us/dedrm/ unless Settings says otherwise.
 Logs, if anything goes wrong, in /mnt/us/logs/kfxdedrm-fe.log.

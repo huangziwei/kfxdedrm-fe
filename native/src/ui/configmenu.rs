@@ -4,10 +4,15 @@
 //! Blocking sub-loop: [`Layout::row_at`] for geometry, [`render`] for the
 //! panel, [`run`] owning input until [`Layout::done`]. GC16 on open and
 //! rotate, a single-row DU on a change.
+//!
+//! `converter` rides every function that draws: the two conversion rows carry
+//! the install lines for `crate::convert`'s add-on while it is missing, and
+//! [`row_boxes`] gives them the room those lines need.
 
 use std::path::{Path, PathBuf};
 
 use crate::config::{self, Config};
+use crate::convert;
 use crate::eink::fb::{Framebuffer, MxcfbRect, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
@@ -21,7 +26,8 @@ const MARGIN_X: u32 = 60;
 const VALUE_MARGIN_X: u32 = 60;
 
 /// The rows in display order: what is scanned, what is listed out of it,
-/// where it goes, how the grid marks a finished book.
+/// where it goes, what else is written there, how the grid marks a finished
+/// book.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     ScanItems01,
@@ -29,15 +35,19 @@ pub enum Row {
     TypesKfx,
     TypesMobi,
     OutDir,
+    PackKfx,
+    ConvertEpub,
     ShowDone,
 }
 
-pub const ROWS: [Row; 6] = [
+pub const ROWS: [Row; 8] = [
     Row::ScanItems01,
     Row::ScanDocuments,
     Row::TypesKfx,
     Row::TypesMobi,
     Row::OutDir,
+    Row::PackKfx,
+    Row::ConvertEpub,
     Row::ShowDone,
 ];
 
@@ -50,15 +60,29 @@ impl Row {
             Row::TypesKfx => "List KFX books",
             Row::TypesMobi => "List MOBI and AZW3 books",
             Row::OutDir => "Decrypt into",
+            Row::PackKfx => "Also pack as KFX",
+            Row::ConvertEpub => "Also convert to EPUB",
             Row::ShowDone => "Keep finished books listed",
         }
     }
 
-    /// The directory a scan row covers, on a second line.
-    fn detail(self) -> Option<&'static str> {
+    /// The second line under a row: the directory a scan row covers, or, while
+    /// the add-on is missing, one half of how to install it.
+    ///
+    /// The two conversion rows are adjacent, so their halves read as the two
+    /// steps they are — where to get it, where to put it. Drawn unwrapped:
+    /// a wrap would split the URL and the path a reader has to transcribe,
+    /// which is what [`DETAIL_MAX_CHARS`] bounds.
+    fn detail(self, converter: bool) -> Option<String> {
         match self {
-            Row::ScanItems01 => Some(config::ITEMS01_DIR),
-            Row::ScanDocuments => Some(config::DOCUMENTS_DIR),
+            Row::ScanItems01 => Some(config::ITEMS01_DIR.to_string()),
+            Row::ScanDocuments => Some(config::DOCUMENTS_DIR.to_string()),
+            Row::PackKfx if !converter => Some(format!("Needs bokai — {}", convert::RELEASES_URL)),
+            Row::ConvertEpub if !converter => Some(format!(
+                "Unzip {} into {}/",
+                convert::RELEASE_ASSET,
+                convert::EXTENSION_DIR
+            )),
             _ => None,
         }
     }
@@ -73,6 +97,8 @@ impl Row {
             Row::TypesKfx => check(cfg.types_kfx),
             Row::TypesMobi => check(cfg.types_mobi),
             Row::OutDir => cfg.out_dir.display().to_string(),
+            Row::PackKfx => check(cfg.pack_kfx),
+            Row::ConvertEpub => check(cfg.convert_epub),
             Row::ShowDone => check(cfg.show_done),
         }
     }
@@ -106,21 +132,86 @@ impl OutDirs {
     }
 }
 
+/// Least height a row may take, whatever its text measures. A comfortable
+/// finger target on a ~300 DPI panel.
+const MIN_ROW_H: u32 = 76;
+
+/// Chars a [`Row::detail`] may carry before it runs off the panel.
+///
+/// `pager::NARROWEST_PANEL_W` less both margins, over the ~half-em advance a
+/// proportional face averages at `app::FONT_PX`. `TextRenderer::measure_width`
+/// is the exact answer and needs a font this crate's tests do not have.
+const DETAIL_MAX_CHARS: usize = 59;
+
+/// One row's slice of the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RowBox {
+    top: u32,
+    height: u32,
+    /// Whether [`Row::detail`]'s line fits under the label here.
+    detail: bool,
+}
+
+/// Where the rows sit between `rows_top` and the strip `room` px below it.
+///
+/// A row carrying a [`Row::detail`] is a line taller than one that does not —
+/// until eight of them stop fitting, which a panel held in landscape is short
+/// enough to do. The detail lines go first then, and the air between rows
+/// after them: a row past the strip is untappable, [`Layout::row_at`]
+/// returning `None` below it.
+///
+/// Free of the framebuffer and the font, so the test that checks the eight
+/// rows clear the strip measures the layout itself.
+fn row_boxes(rows_top: u32, lh: u32, room: u32, converter: bool) -> Vec<RowBox> {
+    let plan = |details: bool, air: u32| -> Vec<RowBox> {
+        let mut y = rows_top;
+        ROWS.iter()
+            .map(|row| {
+                let detail = details && row.detail(converter).is_some();
+                // [`Row::label`], the [`Row::detail`] under it, then the air.
+                let height = (lh * if detail { 2 } else { 1 } + air).max(MIN_ROW_H);
+                let top = y;
+                y += height;
+                RowBox {
+                    top,
+                    height,
+                    detail,
+                }
+            })
+            .collect()
+    };
+    let fits = |boxes: &[RowBox]| {
+        boxes
+            .last()
+            .is_some_and(|b| b.top + b.height - rows_top <= room)
+    };
+
+    let full = plan(true, lh / 2);
+    if fits(&full) {
+        return full;
+    }
+    let tight = plan(false, lh / 2);
+    if fits(&tight) {
+        return tight;
+    }
+    plan(false, 0)
+}
+
 struct Layout {
     rows_top: u32,
-    row_h: u32,
+    rows: Vec<RowBox>,
     strip_top: u32,
 }
 
 impl Layout {
-    fn compute(renderer: &TextRenderer, yres: u32) -> Self {
+    fn compute(renderer: &TextRenderer, yres: u32, converter: bool) -> Self {
         let lh = renderer.line_height().max(1);
-        // Holds [`Row::label`] and [`Row::detail`], with a 96px floor.
-        let row_h = lh.saturating_mul(2).saturating_add(lh / 2).max(96);
+        let rows_top = lh * 3;
+        let strip_top = yres.saturating_sub(STRIP_H);
         Layout {
-            rows_top: lh * 3,
-            row_h,
-            strip_top: yres.saturating_sub(STRIP_H),
+            rows_top,
+            rows: row_boxes(rows_top, lh, strip_top.saturating_sub(rows_top), converter),
+            strip_top,
         }
     }
 
@@ -129,8 +220,9 @@ impl Layout {
         if ty < self.rows_top || ty >= self.strip_top {
             return None;
         }
-        let row = ((ty - self.rows_top) / self.row_h) as usize;
-        (row < ROWS.len()).then_some(row)
+        self.rows
+            .iter()
+            .position(|b| ty >= b.top && ty < b.top + b.height)
     }
 
     fn done(&self, ty: u32) -> bool {
@@ -139,10 +231,10 @@ impl Layout {
 
     fn row_rect(&self, slot: usize, xres: u32) -> MxcfbRect {
         MxcfbRect {
-            top: self.rows_top + slot as u32 * self.row_h,
+            top: self.rows[slot].top,
             left: 0,
             width: xres,
-            height: self.row_h,
+            height: self.rows[slot].height,
         }
     }
 }
@@ -164,6 +256,8 @@ fn apply(row: Row, cfg: &mut Config, out_dirs: &mut OutDirs) {
         Row::ScanDocuments => cfg.scan_documents = !cfg.scan_documents,
         Row::TypesKfx => cfg.types_kfx = !cfg.types_kfx,
         Row::TypesMobi => cfg.types_mobi = !cfg.types_mobi,
+        Row::PackKfx => cfg.pack_kfx = !cfg.pack_kfx,
+        Row::ConvertEpub => cfg.convert_epub = !cfg.convert_epub,
         Row::ShowDone => cfg.show_done = !cfg.show_done,
         Row::OutDir => cfg.out_dir = out_dirs.advance(),
     }
@@ -175,11 +269,16 @@ fn draw_row(
     layout: &Layout,
     slot: usize,
     cfg: &Config,
+    converter: bool,
 ) {
     let row = ROWS[slot];
     let xres = fb.var.xres;
-    let top = layout.rows_top + slot as u32 * layout.row_h;
-    fb.fill_rect(top, 0, xres, layout.row_h, 0xFF);
+    let RowBox {
+        top,
+        height,
+        detail,
+    } = layout.rows[slot];
+    fb.fill_rect(top, 0, xres, height, 0xFF);
 
     let lh = renderer.line_height().max(1);
     let baseline = (top + lh * 80 / 100) as i32;
@@ -191,18 +290,25 @@ fn draw_row(
     let vx = (xres.saturating_sub(VALUE_MARGIN_X) as i32 - vw as i32).max(MARGIN_X as i32);
     renderer.draw(fb, vx, baseline, &value, false);
 
-    if let Some(detail) = row.detail() {
+    // Dropped when [`row_boxes`] could not fit eight two-line rows.
+    if let Some(text) = row.detail(converter).filter(|_| detail) {
         renderer.draw(
             fb,
             MARGIN_X as i32,
             (top + lh * 180 / 100) as i32,
-            detail,
+            &text,
             false,
         );
     }
 }
 
-fn render(fb: &mut Framebuffer, renderer: &mut TextRenderer, cfg: &Config, layout: &Layout) {
+fn render(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    cfg: &Config,
+    layout: &Layout,
+    converter: bool,
+) {
     let xres = fb.var.xres;
     fb.fill_rect(0, 0, xres, fb.var.yres, 0xFF);
 
@@ -212,7 +318,7 @@ fn render(fb: &mut Framebuffer, renderer: &mut TextRenderer, cfg: &Config, layou
     renderer.draw(fb, tx, (layout.rows_top - 8) as i32, title, false);
 
     for slot in 0..ROWS.len() {
-        draw_row(fb, renderer, layout, slot, cfg);
+        draw_row(fb, renderer, layout, slot, cfg, converter);
     }
 
     // `Config::lists_anything` is false two taps from the default.
@@ -240,17 +346,22 @@ fn draw_strip(fb: &mut Framebuffer, renderer: &mut TextRenderer, layout: &Layout
 }
 
 /// Owns input until [`Layout::done`], mutating `cfg` in place.
+///
+/// `converter` is whether `convert::locate` found the add-on. The two
+/// conversion rows toggle either way — the setting outlives an install — and
+/// carry the install line under them while it is `false`.
 pub fn run(
     fb: &mut Framebuffer,
     input: &mut Input,
     renderer: &mut TextRenderer,
     cfg: &mut Config,
     orient: &mut Orientation,
+    converter: bool,
 ) -> anyhow::Result<()> {
-    let mut layout = Layout::compute(renderer, fb.var.yres);
+    let mut layout = Layout::compute(renderer, fb.var.yres, converter);
     let mut out_dirs = OutDirs::new(&cfg.out_dir);
 
-    render(fb, renderer, cfg, &layout);
+    render(fb, renderer, cfg, &layout, converter);
     fb.send_update(full_rect(fb), WAVEFORM_MODE_GC16)?;
 
     loop {
@@ -266,11 +377,11 @@ pub fn run(
                 apply(ROWS[slot], cfg, &mut out_dirs);
                 if cfg.lists_anything() == listed_before {
                     // One row changed: DU that row.
-                    draw_row(fb, renderer, &layout, slot, cfg);
+                    draw_row(fb, renderer, &layout, slot, cfg, converter);
                     fb.send_update(layout.row_rect(slot, fb.var.xres), WAVEFORM_MODE_DU)?;
                 } else {
                     // The `lists_anything` line sits outside this row's rect.
-                    render(fb, renderer, cfg, &layout);
+                    render(fb, renderer, cfg, &layout, converter);
                     fb.send_update(full_rect(fb), WAVEFORM_MODE_GC16)?;
                 }
             }
@@ -282,8 +393,8 @@ pub fn run(
                 if o != *orient {
                     *orient = o;
                     input.set_orientation(o);
-                    layout = Layout::compute(renderer, fb.var.yres);
-                    render(fb, renderer, cfg, &layout);
+                    layout = Layout::compute(renderer, fb.var.yres, converter);
+                    render(fb, renderer, cfg, &layout, converter);
                     fb.send_update(full_rect(fb), WAVEFORM_MODE_GC16)?;
                 }
             }
@@ -369,9 +480,103 @@ mod tests {
             assert!(!row.label().is_empty(), "{row:?}");
             assert!(!row.value(&cfg).is_empty(), "{row:?}");
         }
-        // The scan rows carry a [`Row::detail`]; the rest do not.
-        assert_eq!(Row::ScanItems01.detail(), Some(config::ITEMS01_DIR));
-        assert_eq!(Row::ScanDocuments.detail(), Some(config::DOCUMENTS_DIR));
-        assert_eq!(Row::ShowDone.detail(), None);
+        // The scan rows carry a [`Row::detail`] whatever else holds.
+        for converter in [true, false] {
+            assert_eq!(
+                Row::ScanItems01.detail(converter).as_deref(),
+                Some(config::ITEMS01_DIR)
+            );
+            assert_eq!(
+                Row::ScanDocuments.detail(converter).as_deref(),
+                Some(config::DOCUMENTS_DIR)
+            );
+            assert_eq!(Row::ShowDone.detail(converter), None);
+        }
+    }
+
+    #[test]
+    fn the_conversion_rows_name_the_asset_the_url_and_the_destination() {
+        // Between them, and only while the add-on is missing.
+        let text = [Row::PackKfx, Row::ConvertEpub]
+            .map(|row| row.detail(false).expect("no install line"))
+            .join("\n");
+        assert!(text.contains(convert::RELEASES_URL));
+        assert!(text.contains(convert::RELEASE_ASSET));
+        assert!(text.contains(convert::EXTENSION_DIR));
+        // Installed, the lines are gone and both rows are a line shorter.
+        assert_eq!(Row::PackKfx.detail(true), None);
+        assert_eq!(Row::ConvertEpub.detail(true), None);
+    }
+
+    #[test]
+    fn no_detail_line_runs_off_the_narrowest_panel() {
+        for row in ROWS {
+            for converter in [true, false] {
+                let Some(detail) = row.detail(converter) else {
+                    continue;
+                };
+                let n = detail.chars().count();
+                assert!(
+                    n <= DETAIL_MAX_CHARS,
+                    "{row:?} detail is {n} chars, over {DETAIL_MAX_CHARS}: {detail}"
+                );
+            }
+        }
+    }
+
+    /// The panel is at its shortest held in landscape on the narrowest device
+    /// this runs on, and every row has to stay above the `[ Done ]` strip
+    /// there — [`Layout::row_at`] returns `None` below it.
+    #[test]
+    fn every_row_stays_tappable_on_the_shortest_panel() {
+        // `pager::NARROWEST_PANEL_W` is that panel's short side, so it is the
+        // `yres` a landscape rotation hands this layout.
+        let yres = crate::ui::pager::NARROWEST_PANEL_W;
+        // Past anything `app::FONT_PX` produces at either end, standing in for
+        // whichever face the fallback chain resolves to.
+        for lh in 24..=64 {
+            let rows_top = lh * 3;
+            let room = yres - STRIP_H - rows_top;
+            for converter in [true, false] {
+                let boxes = row_boxes(rows_top, lh, room, converter);
+                assert_eq!(boxes.len(), ROWS.len());
+                let last = boxes[ROWS.len() - 1];
+                assert!(
+                    last.top + last.height <= yres - STRIP_H,
+                    "rows run to {}px past {}px of room (lh={lh} converter={converter})",
+                    last.top + last.height - rows_top,
+                    room
+                );
+                // Contiguous and ascending, so [`Layout::row_at`]'s scan finds
+                // a row for every y the strip does not take.
+                assert_eq!(boxes[0].top, rows_top);
+                assert!(
+                    boxes.windows(2).all(|w| w[0].top + w[0].height == w[1].top),
+                    "gap between rows (lh={lh})"
+                );
+                // Every row keeps a finger-sized target through both fallbacks.
+                assert!(boxes.iter().all(|b| b.height >= MIN_ROW_H));
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_is_taller_exactly_when_it_carries_a_detail_line() {
+        const LH: u32 = 40;
+        // Room enough that [`row_boxes`] keeps every detail line.
+        let boxes = row_boxes(0, LH, 4000, true);
+        let at = |row: Row| boxes[ROWS.iter().position(|r| *r == row).unwrap()];
+        assert!(at(Row::ScanItems01).detail);
+        assert!(!at(Row::ShowDone).detail);
+        assert!(at(Row::ScanItems01).height > at(Row::ShowDone).height);
+    }
+
+    #[test]
+    fn a_panel_too_short_for_the_detail_lines_drops_them_rather_than_the_rows() {
+        const LH: u32 = 40;
+        // Exactly the eight one-line rows, and not one pixel more.
+        let boxes = row_boxes(0, LH, MIN_ROW_H * ROWS.len() as u32, false);
+        assert!(boxes.iter().all(|b| !b.detail));
+        assert!(boxes.iter().all(|b| b.height == MIN_ROW_H));
     }
 }

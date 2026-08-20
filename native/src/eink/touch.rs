@@ -27,15 +27,14 @@
 //! absolute axes (`EV_ABS`) and is a direct device (`INPUT_PROP_DIRECT`).
 //! We extract its `eventN` handler; no `EVIOCGNAME` ioctl needed.
 //!
-//! Capability alone is *not* sufficient, and the Scribe is why. It carries a
-//! Wacom EMR pen digitizer alongside the finger panel, and a pen on a screen is
-//! every bit as `EV_ABS` + `INPUT_PROP_DIRECT` as a finger is. Taking the first
-//! capable node grabbed `wacomdigitizer`, and because we `EVIOCGRAB` what we
-//! open, that both blinded the picker to touch and starved the framework of pen
-//! input — the device could only be recovered by rebooting.
+//! Capability alone is *not* sufficient. The Scribe carries a Wacom EMR pen
+//! digitizer alongside the finger panel, and a pen on a screen is every bit as
+//! `EV_ABS` + `INPUT_PROP_DIRECT` as a finger is. Grabbing the pen node blinds
+//! this app to touch *and* starves the framework of pen input, and the device
+//! only comes back with a reboot.
 //!
 //! So discovery *scores* every node and takes the best, rather than returning
-//! the first that clears a bar. Pen/stylus digitizers are excluded outright;
+//! the first that clears a bar. Pen/stylus digitizers are ranked last;
 //! everything else is ranked by how much it looks like a finger panel. Scoring
 //! rather than filtering is deliberate: a heuristic that ranks wrongly costs a
 //! preference, while one that filters wrongly costs the only usable device.
@@ -81,8 +80,7 @@ const SCREENSHOT_CORNER_PX: u32 = 180;
 /// Boundary touch events surfaced to the main loop. `Down` fires when
 /// the user's finger first lands; `Up` fires when it lifts. Move
 /// events between the two update internal `cur_x/cur_y` but don't
-/// emit — for v1 of long-press, only the timing between Down and Up
-/// matters.
+/// emit — the long-press path needs only the timing between Down and Up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchEvent {
     Down {
@@ -102,8 +100,8 @@ pub enum TouchEvent {
 }
 
 /// Horizontal-swipe direction, classified from one touch stroke's start→end
-/// vector (see [`classify_swipe`]). The picker maps these to page turns — the
-/// page-flip affordance the buttonless Colorsoft can't get from bezel keys.
+/// vector (see [`classify_swipe`]). These map to page turns — the page-flip
+/// affordance the buttonless Colorsoft can't get from bezel keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwipeDir {
     /// Right-to-left drag → next page (the current page slides off to the left).
@@ -177,7 +175,7 @@ impl Touch {
         // A failed grab is not fatal — we still read the device — but it stops
         // being *exclusive*, so the framework goes on receiving the same touches
         // and acts on them behind us: a swipe reaches the stock home screen, and
-        // the framework repaints over our chrome. That presents as "the picker
+        // the framework repaints over our chrome. That presents as "the app
         // works but the OS is fighting it", which is impossible to guess at from
         // the outside, so say so plainly.
         if grabbed {
@@ -383,7 +381,7 @@ fn opposite_corners(ax: u32, ay: u32, bx: u32, by: u32, w: u32, h: u32) -> bool 
 /// horizontal page-flip swipe, or `None` when it's a tap, too short, or too
 /// vertical to read as an unambiguous left/right swipe.
 ///
-/// Only the Down→Up endpoints are needed (the picker doesn't track the path).
+/// Only the Down→Up endpoints are needed; the path is not tracked.
 /// A swipe must travel at least `xres / 5` horizontally **and** be at least
 /// twice as horizontal as vertical (≈ within 27° of horizontal); that keeps
 /// taps (tiny `dx`) and vertical drifts from flipping pages. `xres` scales the
@@ -414,8 +412,8 @@ impl Drop for Touch {
 
 /// Names that are never a finger panel. A pen digitizer satisfies every
 /// capability test a touchscreen does, so nothing but the name separates them
-/// from the outside — and grabbing one is the difference between a working
-/// picker and a device that needs a reboot.
+/// from the outside — and grabbing one is the difference between a working app
+/// and a device that needs a reboot.
 const PEN_NAMES: [&str; 4] = ["wacom", "digitizer", "stylus", "pen"];
 
 /// Names that are a finger panel on some Kindle we know of. `pt_mt` is the
@@ -520,7 +518,7 @@ fn pick_from_devices(raw: &str) -> Option<String> {
         return Some(node);
     }
     // Nothing else qualified, so a pen-named node is better than no input at
-    // all — a device with an unusable picker is worse than one driven by the
+    // all — a device that cannot be tapped is worse than one driven by the
     // wrong digitizer, and the log says plainly which happened.
     let (node, name) = pen_fallback?;
     eprintln!("touch: using /dev/input/{node} (name={name:?}) — pen-named, but the only candidate");
@@ -585,9 +583,8 @@ mod tests {
 
     /// Verbatim `/proc/bus/input/devices` from a Kindle Scribe on 5.19.4.0.1.
     /// The pen digitizer enumerates *before* the finger panel and is every bit
-    /// as `EV_ABS` + `INPUT_PROP_DIRECT`, which is what made the old
-    /// take-the-first-capable-node rule grab it — and, because we `EVIOCGRAB`,
-    /// left the device needing a reboot.
+    /// as `EV_ABS` + `INPUT_PROP_DIRECT`, so node order alone cannot separate
+    /// the two.
     const SCRIBE_DEVICES: &str = "\
 I: Bus=0019 Vendor=0001 Product=0001 Version=0100
 N: Name=\"bd71828-pwrkey\"
@@ -693,7 +690,7 @@ B: ABS=f000003
 
     /// The pen exclusion must not be able to leave a device with no input.
     /// `pen` is a substring, so some panel will eventually contain it, and a
-    /// picker that cannot be tapped is worse than one driven by a digitizer.
+    /// screen that cannot be tapped is worse than one driven by a digitizer.
     #[test]
     fn a_pen_named_node_is_used_when_it_is_the_only_candidate() {
         let only_pen = "\

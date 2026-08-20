@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use kfxdedrm_fe_native::config::Config;
+use kfxdedrm_fe_native::convert::{self, Targets};
 use kfxdedrm_fe_native::engine::{self, Format, Missing};
 use kfxdedrm_fe_native::scan::{self, Book};
 
@@ -73,9 +74,14 @@ fn cfg_out(out: &Path) -> Config {
     }
 }
 
-/// [`scan::scan_in`] over one root, no thumbnail cache.
+/// [`scan::scan_in`] over one root, no thumbnail cache and no conversions.
 fn scan_one(root: &Path, cfg: &Config) -> Vec<Book> {
-    scan::scan_in(&[root.to_path_buf()], cfg, Path::new("/nonexistent"))
+    scan::scan_in(
+        &[root.to_path_buf()],
+        cfg,
+        Targets::default(),
+        Path::new("/nonexistent"),
+    )
 }
 
 #[test]
@@ -145,6 +151,41 @@ fn already_decrypted_books_are_marked_or_hidden() {
     assert_eq!(found[0].title, "Fresh");
 }
 
+/// `convert::Targets` rides `Book::done`: a decrypt whose conversions have
+/// not landed is not finished, and the book stays listed for another run.
+#[test]
+fn a_book_missing_a_conversion_is_not_done_yet() {
+    let t = Tree::new("converted");
+    let items = t.dir("Items01");
+    let out = t.dir("out");
+    t.kfx(&items, "Book_B078H4RWP7", true);
+    std::fs::write(out.join("Book_B078H4RWP7.kfx-zip"), b"z").unwrap();
+
+    let cfg = cfg_out(&out);
+    let targets = Targets {
+        kfx: true,
+        epub: true,
+    };
+    let scan = |targets| {
+        scan::scan_in(
+            std::slice::from_ref(&items),
+            &cfg,
+            targets,
+            Path::new("/nonexistent"),
+        )
+    };
+
+    // The engine's own output alone is enough only when nothing else is asked.
+    assert!(scan(Targets::default())[0].done);
+    assert!(!scan(targets)[0].done);
+
+    std::fs::write(out.join("Book_B078H4RWP7.kfx"), b"k").unwrap();
+    assert!(!scan(targets)[0].done);
+
+    std::fs::write(out.join("Book_B078H4RWP7.epub"), b"e").unwrap();
+    assert!(scan(targets)[0].done);
+}
+
 #[test]
 fn done_is_judged_against_the_configured_output_folder() {
     // `Book::done` tracks `Config::out_dir`.
@@ -207,7 +248,12 @@ fn roots_are_listed_in_the_order_they_were_given() {
     t.mobi(&docs, "Sideload.azw3", 2);
 
     let roots = [items, docs];
-    let found = scan::scan_in(&roots, &cfg_out(&out), Path::new("/nonexistent"));
+    let found = scan::scan_in(
+        &roots,
+        &cfg_out(&out),
+        Targets::default(),
+        Path::new("/nonexistent"),
+    );
     let titles: Vec<&str> = found.iter().map(|b| b.title.as_str()).collect();
     // The order `Config::scan_roots` emits.
     assert_eq!(titles, ["Purchase", "Sideload"]);
@@ -230,7 +276,7 @@ fn a_cover_is_taken_only_when_it_is_complete() {
     )
     .unwrap();
 
-    let found = scan::scan_in(&[items], &cfg_out(&out), &thumbs);
+    let found = scan::scan_in(&[items], &cfg_out(&out), Targets::default(), &thumbs);
     let by = |t: &str| found.iter().find(|b| b.title == t).unwrap();
     assert!(by("Covered").cover_path.is_some());
     assert_eq!(by("Pending").cover_path, None);
@@ -260,4 +306,39 @@ fn a_missing_engine_and_a_broken_one_are_told_apart() {
     // The probe runs `test` and takes the exit code, not the name.
     std::fs::write(bin.join("kfxdedrmhf_c11"), b"not an elf").unwrap();
     assert_eq!(engine::locate_in(&bin), Err(Missing::NoWorkingBuild));
+}
+
+/// `convert::locate_at` takes the `--version` exit code, the way
+/// `engine::locate_in` takes `test`'s: a build for the wrong ABI is on disk
+/// and does not run.
+#[test]
+fn the_converter_has_to_run_before_it_counts_as_installed() {
+    let t = Tree::new("converter");
+    let bin = t.dir("bin");
+    let exe = bin.join("bokai");
+
+    // Nothing there.
+    assert_eq!(convert::locate_at(&exe), None);
+
+    // There, and not executable.
+    std::fs::write(&exe, b"not an elf").unwrap();
+    assert_eq!(convert::locate_at(&exe), None);
+
+    // A stand-in that exits 0. The probe never reads what it prints.
+    std::fs::write(&exe, "#!/bin/sh\necho bokai 0.0.0\n").unwrap();
+    make_executable(&exe);
+    assert!(convert::locate_at(&exe).is_some_and(|c| c.exe() == exe));
+
+    // Installed, and failing its own probe.
+    std::fs::write(&exe, "#!/bin/sh\nexit 1\n").unwrap();
+    make_executable(&exe);
+    assert_eq!(convert::locate_at(&exe), None);
+}
+
+/// `chmod +x`, for the shell stand-ins above.
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms).unwrap();
 }

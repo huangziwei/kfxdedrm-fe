@@ -22,6 +22,15 @@ rustup target add armv7-unknown-linux-musleabihf
 | `extensions/kfxdedrm-fe/` | `/mnt/us/extensions/kfxdedrm-fe/` | this exact path — the launcher and the settings file are hardcoded to it |
 | `documents/KFXDeDRM.sh` | `/mnt/us/documents/KFXDeDRM.sh` | or anywhere you store your scriptlets |
 
+3. (optional) Download `bokai-v<x.y.z>-kindle.zip` from the [sidle releases](https://github.com/huangziwei/sidle/releases) and unzip it to `/mnt/us/extensions/bokai/`. Then in Settings turn on either of:
+
+| setting | what it writes, next to the engine's own output |
+|:--|:--|
+| `Also pack as KFX` | `<book>.kfx`, the `.kfx-zip` bundle merged into one container |
+| `Also convert to EPUB` | `<book>.epub` |
+
+By default both are off, and the converted formats will land in the same folder `Decrypt into` points at, and nothing is deleted.
+
 ## Screenshot
 
 <p align="center">
