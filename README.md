@@ -29,13 +29,7 @@ rustup target add armv7-unknown-linux-musleabihf
 | `KFX` | `<book>.kfx`, the `.kfx-zip` bundle merged into one container |
 | `EPUB` | `<book>.epub` |
 
-Both are off by default. Nothing is deleted — the `.kfx-zip` stays where it was. Without bokai installed the two chips are greyed out and untappable, and the page says where to get it.
-
-## Where things go
-
-Decrypted books always land in `/mnt/us/dedrm`, and that is not a setting: every kfxdedrm release so far writes there and ignores the out-folder argument it is handed. Move them on from there with whatever reader you use.
-
-Which folders are read *is* a setting. Settings offers a chip for every folder under `/mnt/us/documents` that holds a DRM'd book — so wherever your firmware puts purchases, and wherever you sideload, there is a chip for it. Pick as many as you like. A fresh install reads `/mnt/us/documents/Downloads/Items01`, where current firmware downloads to.
+Both are off by default.
 
 ## Screenshot
 
