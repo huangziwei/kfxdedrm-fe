@@ -66,7 +66,7 @@ impl Input {
 
     /// Non-blocking check for a pending event (zero-timeout `poll`). Returns
     /// the first ready event, or `None` if neither device has a complete event
-    /// right now. Unlike [`next`](Self::next) it never blocks and never
+    /// right now. Unlike [`Self::next_event`] it never blocks and never
     /// surfaces `Tick` — the blocking flows call it between their blocking
     /// steps to notice a button tap, bezel press, or screenshot gesture
     /// without stalling the work. A partial touch stroke
@@ -119,7 +119,7 @@ impl Input {
         self.next_deadline(None)
     }
 
-    /// Like [`Self::next`], but when `deadline` is `Some`, surfaces an
+    /// Like [`Self::next_event`], but when `deadline` is `Some`, surfaces an
     /// [`InputEvent::Tick`] the instant that time is reached — even while the
     /// touch fd stays busy.
     ///

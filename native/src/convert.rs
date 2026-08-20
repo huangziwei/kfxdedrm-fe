@@ -14,7 +14,7 @@
 //!
 //! Every conversion here starts from `engine::output_path` — `<stem>.kfx-zip`
 //! for a KFX book, the book's own name for a MOBI-family one — and writes
-//! beside it, inside `Config::out_dir`.
+//! beside it, inside `config::OUT_DIR`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

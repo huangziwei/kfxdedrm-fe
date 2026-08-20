@@ -1,8 +1,8 @@
-//! [`run`]: a paginated grid of `[crate::scan::Book]`, with [`ui::configmenu`]
+//! [`run`]: a paginated grid of `[crate::scan::Book]`, with [`crate::ui::configmenu`]
 //! as a blocking overlay. A held cover runs [`decrypt_one`]; the toolbar runs
 //! [`decrypt_all`].
 //!
-//! [`engine::locate`] failing ends the launch at [`ui::setup`]. [`convert::locate`]
+//! [`engine::locate`] failing ends the launch at [`crate::ui::setup`]. [`convert::locate`]
 //! failing costs nothing: `convert::Targets` reads as empty and [`convert_outputs`]
 //! plans no step.
 //!
@@ -151,7 +151,7 @@ fn draw_page(
     total_pages: usize,
 ) {
     fb.fill_rect(0, 0, fb.var.xres, fb.var.yres, 0xFF);
-    header::draw(fb, renderer, pending(books), books.len(), &cfg.out_dir);
+    header::draw(fb, renderer, pending(books), books.len());
 
     if books.is_empty() {
         draw_empty(fb, renderer, cfg);
@@ -183,12 +183,12 @@ fn draw_empty(fb: &mut Framebuffer, renderer: &mut TextRenderer, cfg: &Config) {
     let lines: Vec<String> = if !cfg.lists_anything() {
         vec![
             "Nothing is being listed".to_string(),
-            "Open Settings and turn on a folder and a format".to_string(),
+            "Open Settings and pick a folder and a format".to_string(),
         ]
     } else if cfg.show_done {
         vec![
             "No DRM'd books found".to_string(),
-            format!("Looked in {}", roots_summary(cfg)),
+            format!("Looked in {}", folders_summary(cfg)),
         ]
     } else {
         vec![
@@ -206,11 +206,14 @@ fn draw_empty(fb: &mut Framebuffer, renderer: &mut TextRenderer, cfg: &Config) {
     }
 }
 
-/// `Config::scan_roots` as one line.
-fn roots_summary(cfg: &Config) -> String {
-    let roots = cfg.scan_roots();
-    let names: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
-    names.join("  and  ")
+/// `Config::scan_dirs` as one line: the folder itself while there is one,
+/// a count once naming them all would run off the panel.
+fn folders_summary(cfg: &Config) -> String {
+    match cfg.scan_dirs.as_slice() {
+        [] => "no folder".to_string(),
+        [one] => one.display().to_string(),
+        many => format!("{} folders", many.len()),
+    }
 }
 
 /// [`load_cover`] for each cell on `page`, refreshing that cell as its image
@@ -304,38 +307,12 @@ fn read_lines(out: std::process::ChildStdout) -> std::sync::mpsc::Receiver<Strin
     rx
 }
 
-/// True once `engine::output_path(book.path, out_dir)` exists.
+/// True once `engine::output_path` of `book` exists under `config::OUT_DIR`.
 ///
-/// An engine build that ignores its third argument writes to
-/// [`config::DEFAULT_OUT_DIR`]; one rename moves that across.
-fn settle_output(book: &Book, out_dir: &Path) -> bool {
-    let Some(expected) = engine::output_path(&book.path, out_dir) else {
-        return false;
-    };
-    if expected.exists() {
-        return true;
-    }
-    let Some(fallback) = engine::output_path(&book.path, Path::new(config::DEFAULT_OUT_DIR)) else {
-        return false;
-    };
-    if fallback == expected || !fallback.exists() {
-        return false;
-    }
-    log(format!(
-        "engine ignored the out-folder argument; moving {} -> {}",
-        fallback.display(),
-        expected.display()
-    ));
-    if let Some(parent) = expected.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match std::fs::rename(&fallback, &expected) {
-        Ok(()) => true,
-        Err(e) => {
-            log(format!("move failed: {e}"));
-            false
-        }
-    }
+/// The engine writes there and nowhere else, whatever out folder it is handed
+/// — see `engine`'s module header — so this is a look, not a move.
+fn decrypted(book: &Book) -> bool {
+    engine::output_path(&book.path, Path::new(config::OUT_DIR)).is_some_and(|p| p.exists())
 }
 
 /// How a [`convert_outputs`] step announces itself. The two callers want
@@ -522,7 +499,6 @@ fn decrypt_one(
     eng: &Engine,
     conv: Option<&Converter>,
     targets: Targets,
-    cfg: &Config,
     book: &Book,
 ) -> anyhow::Result<(String, bool)> {
     let short = short_title(&book.title, 34);
@@ -530,11 +506,11 @@ fn decrypt_one(
     // Already decrypted, only the conversions left: `scan::Book::done` counts
     // those, so a book with a finished decrypt behind it still reaches here.
     // The engine has nothing to do for it.
-    if !settle_output(book, &cfg.out_dir) {
-        if let Some(msg) = run_engine(fb, renderer, input, eng, cfg, book, &short)? {
+    if !decrypted(book) {
+        if let Some(msg) = run_engine(fb, renderer, input, eng, book, &short)? {
             return Ok((msg, false));
         }
-        if !settle_output(book, &cfg.out_dir) {
+        if !decrypted(book) {
             return Ok((
                 format!("{short}\nEngine finished, but wrote no file"),
                 false,
@@ -544,7 +520,10 @@ fn decrypt_one(
         log(format!("already decrypted: {}", book.path.display()));
     }
 
-    let failed = match (conv, engine::output_path(&book.path, &cfg.out_dir)) {
+    let failed = match (
+        conv,
+        engine::output_path(&book.path, Path::new(config::OUT_DIR)),
+    ) {
         (Some(c), Some(out)) => {
             let mut banner = StepBanner::One(&short);
             convert_outputs(fb, renderer, input, c, targets, &out, &mut banner)?
@@ -562,7 +541,6 @@ fn run_engine(
     renderer: &mut TextRenderer,
     input: &mut Input,
     eng: &Engine,
-    cfg: &Config,
     book: &Book,
     short: &str,
 ) -> anyhow::Result<Option<String>> {
@@ -571,7 +549,7 @@ fn run_engine(
     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
 
     let mut child = match eng
-        .decrypt(&book.path, &cfg.out_dir)
+        .decrypt(&book.path, Path::new(config::OUT_DIR))
         .stdout(std::process::Stdio::piped())
         .spawn()
     {
@@ -641,7 +619,6 @@ fn decrypt_all(
     eng: &Engine,
     conv: Option<&Converter>,
     targets: Targets,
-    cfg: &Config,
     books: &[Book],
 ) -> anyhow::Result<String> {
     let todo: Vec<&Book> = books.iter().filter(|b| !b.done).collect();
@@ -658,7 +635,7 @@ fn decrypt_all(
         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
 
         // Already decrypted, only the conversions left — see [`decrypt_one`].
-        let mut ok = settle_output(book, &cfg.out_dir);
+        let mut ok = decrypted(book);
         if ok {
             log(format!(
                 "batch {}/{}: already decrypted {}",
@@ -667,7 +644,7 @@ fn decrypt_all(
                 book.path.display()
             ));
         } else {
-            let status = match eng.decrypt(&book.path, &cfg.out_dir).spawn() {
+            let status = match eng.decrypt(&book.path, Path::new(config::OUT_DIR)).spawn() {
                 Ok(mut child) => loop {
                     match child.try_wait() {
                         Ok(Some(s)) => break Ok(s),
@@ -698,7 +675,7 @@ fn decrypt_all(
                 Err(e) => Err(e),
             };
 
-            ok = matches!(status, Ok(ref s) if s.success()) && settle_output(book, &cfg.out_dir);
+            ok = matches!(status, Ok(ref s) if s.success()) && decrypted(book);
             log(format!(
                 "batch {}/{}: {} exit={status:?} ok={ok}",
                 i + 1,
@@ -709,7 +686,7 @@ fn decrypt_all(
 
         if ok
             && let Some(c) = conv
-            && let Some(out) = engine::output_path(&book.path, &cfg.out_dir)
+            && let Some(out) = engine::output_path(&book.path, Path::new(config::OUT_DIR))
         {
             let mut banner = StepBanner::Batch {
                 done: i,
@@ -817,12 +794,8 @@ pub fn run() -> anyhow::Result<()> {
     let mut cfg = Config::load(&cfg_path);
     let mut targets = Targets::new(&cfg, converter.as_ref());
     log(format!(
-        "settings: roots={:?} kfx={} mobi={} out={} show_done={} targets={targets:?}",
-        cfg.scan_roots(),
-        cfg.types_kfx,
-        cfg.types_mobi,
-        cfg.out_dir.display(),
-        cfg.show_done
+        "settings: folders={:?} kfx={} mobi={} show_done={} targets={targets:?}",
+        cfg.scan_dirs, cfg.types_kfx, cfg.types_mobi, cfg.show_done
     ));
 
     let mut books = scan::scan(&cfg, targets);
@@ -949,11 +922,16 @@ pub fn run() -> anyhow::Result<()> {
                     Some(pager::PagerHit::Exit) => return Ok(()),
                     Some(pager::PagerHit::Settings) => {
                         let before = cfg.clone();
+                        // Read here rather than at startup: a book downloaded
+                        // while the app was open puts a new folder on the page.
+                        let folders = scan::candidates(&cfg);
+                        log(format!("folders: {folders:?}"));
                         configmenu::run(
                             &mut fb,
                             &mut input,
                             &mut renderer,
                             &mut cfg,
+                            &folders,
                             &mut orient,
                             converter.is_some(),
                         )?;
@@ -977,7 +955,6 @@ pub fn run() -> anyhow::Result<()> {
                             &eng,
                             converter.as_ref(),
                             targets,
-                            &cfg,
                             &books,
                         )?;
                         let rect = toast::draw_download_done(&mut fb, &mut renderer, &msg);
@@ -1065,7 +1042,6 @@ pub fn run() -> anyhow::Result<()> {
                         &eng,
                         converter.as_ref(),
                         targets,
-                        &cfg,
                         &book,
                     )?;
                     log(format!("result: ok={ok} {}", msg.replace('\n', " — ")));

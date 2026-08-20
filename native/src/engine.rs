@@ -15,6 +15,12 @@
 //! [`probe_in`] calls `test` and [`Engine::decrypt`] calls `dedrm`.
 //! `scan`/`scantruncate` write into [`EXTENSION_DIR`]. `dedrm_all` carries no
 //! per-book progress.
+//!
+//! **The engine does not read the out-folder argument.** It parses
+//! `dedrm <book>` and writes to `config::OUT_DIR` whatever it is handed, which
+//! is why that is a constant and not a setting. [`Engine::decrypt`] passes the
+//! argument regardless, so a build that does read it writes to the same place
+//! and needs no change here.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -137,8 +143,9 @@ impl Engine {
 
     /// `<exe> dedrm <book> <out_dir>`.
     ///
-    /// `out_dir` rides every call, matching `Config::out_dir` against what the
-    /// engine receives. The engine creates the folder.
+    /// `out_dir` rides every call and the engine ignores it — see this
+    /// module's header. Callers pass `config::OUT_DIR`, which is where it
+    /// writes anyway, and it creates that folder itself.
     pub fn decrypt(&self, book: &Path, out_dir: &Path) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("dedrm").arg(book).arg(out_dir);

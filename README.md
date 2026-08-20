@@ -22,14 +22,20 @@ rustup target add armv7-unknown-linux-musleabihf
 | `extensions/kfxdedrm-fe/` | `/mnt/us/extensions/kfxdedrm-fe/` | this exact path — the launcher and the settings file are hardcoded to it |
 | `documents/KFXDeDRM.sh` | `/mnt/us/documents/KFXDeDRM.sh` | or anywhere you store your scriptlets |
 
-3. (optional) Download `bokai-v<x.y.z>-kindle.zip` from the [sidle releases](https://github.com/huangziwei/sidle/releases) and unzip it to `/mnt/us/extensions/bokai/`. Then in Settings turn on either of:
+3. (optional) Download `bokai-v<x.y.z>-kindle.zip` from the [sidle releases](https://github.com/huangziwei/sidle/releases) and unzip it to `/mnt/us/extensions/bokai/`. Then in Settings, under `Output`, tap either chip of the `Also write` row:
 
-| setting | what it writes, next to the engine's own output |
+| chip | what it writes, next to the engine's own output |
 |:--|:--|
-| `Also pack as KFX` | `<book>.kfx`, the `.kfx-zip` bundle merged into one container |
-| `Also convert to EPUB` | `<book>.epub` |
+| `KFX` | `<book>.kfx`, the `.kfx-zip` bundle merged into one container |
+| `EPUB` | `<book>.epub` |
 
-By default both are off, and the converted formats will land in the same folder `Decrypt into` points at, and nothing is deleted.
+Both are off by default. Nothing is deleted — the `.kfx-zip` stays where it was. Without bokai installed the two chips are greyed out and untappable, and the page says where to get it.
+
+## Where things go
+
+Decrypted books always land in `/mnt/us/dedrm`, and that is not a setting: every kfxdedrm release so far writes there and ignores the out-folder argument it is handed. Move them on from there with whatever reader you use.
+
+Which folders are read *is* a setting. Settings offers a chip for every folder under `/mnt/us/documents` that holds a DRM'd book — so wherever your firmware puts purchases, and wherever you sideload, there is a chip for it. Pick as many as you like. A fresh install reads `/mnt/us/documents/Downloads/Items01`, where current firmware downloads to.
 
 ## Screenshot
 

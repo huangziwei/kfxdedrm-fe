@@ -24,6 +24,7 @@ use anyhow::Result;
 
 use crate::eink::fb::Framebuffer;
 use crate::font::{self, FontChain};
+use crate::ui::{BLACK, WHITE};
 
 const COVERAGE_THRESHOLD: u8 = 96;
 
@@ -65,6 +66,22 @@ impl TextRenderer {
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(" -> ")
+    }
+
+    /// Run `f` with the renderer at `px`, restoring the previous size after.
+    ///
+    /// One chain and one copy of every face however many sizes are drawn: the
+    /// glyph cache is keyed by size, so a second size costs the glyphs it
+    /// actually draws and nothing else. A second [`TextRenderer`] would read
+    /// the face files again, which for a CJK face is tens of megabytes.
+    ///
+    /// [`TextRenderer::line_height`] and [`TextRenderer::measure_width`] read
+    /// the size too, so both answer for `px` inside `f`.
+    pub fn at_px<R>(&mut self, px: f32, f: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = std::mem::replace(&mut self.px, px);
+        let out = f(self);
+        self.px = previous;
+        out
     }
 
     pub fn line_height(&self) -> u32 {
@@ -151,6 +168,37 @@ impl TextRenderer {
         self.draw_in(font::Script::Unknown, fb, x, y_baseline, s, inverted)
     }
 
+    /// [`TextRenderer::draw`] in an explicit shade — `ui::QUIET` for a line
+    /// that is not a control, or either of the two `draw` picks between.
+    pub fn draw_ink(
+        &mut self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y_baseline: i32,
+        s: &str,
+        ink: u8,
+    ) -> i32 {
+        self.draw_in_ink(font::Script::Unknown, fb, x, y_baseline, s, ink)
+    }
+
+    /// [`TextRenderer::draw_ink`] struck twice, a pixel apart.
+    ///
+    /// `font::rank` puts upright regulars first and a device may carry no bold
+    /// cut at all, so a heading is thickened rather than set in another face.
+    /// The second strike widens the run by one pixel, which
+    /// [`TextRenderer::measure_width`] does not account for.
+    pub fn draw_bold(
+        &mut self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y_baseline: i32,
+        s: &str,
+        ink: u8,
+    ) -> i32 {
+        self.draw_ink(fb, x, y_baseline, s, ink);
+        self.draw_ink(fb, x + 1, y_baseline, s, ink)
+    }
+
     /// [`TextRenderer::draw`] for text whose language is known — a book title
     /// from a tagged book, rather than the app's own chrome.
     ///
@@ -168,7 +216,20 @@ impl TextRenderer {
         s: &str,
         inverted: bool,
     ) -> i32 {
-        let fg = if inverted { 0xFF } else { 0x00 };
+        let ink = if inverted { WHITE } else { BLACK };
+        self.draw_in_ink(script, fb, x, y_baseline, s, ink)
+    }
+
+    /// [`TextRenderer::draw_in`] in an explicit shade.
+    pub fn draw_in_ink(
+        &mut self,
+        script: font::Script,
+        fb: &mut Framebuffer,
+        x: i32,
+        y_baseline: i32,
+        s: &str,
+        fg: u8,
+    ) -> i32 {
         let selection = self.chain.select(s, script);
         let px = self.px;
         let px_key = px.to_bits();

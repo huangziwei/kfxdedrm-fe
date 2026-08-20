@@ -303,7 +303,8 @@ fn dist_to_seg(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
 /// cover region. Drawn over the press outline, which stays, so the tile reads as
 /// "held long enough — running now" in one partial refresh; the cover stays
 /// visible around the badge. The post-action repaint clears it. `(cell_x,
-/// cell_y)` is the on-screen cell origin (see [`cell_xy`]); off-screen no-ops.
+/// cell_y)` is the on-screen cell origin (see [`Layout::cell_xy`]); off-screen
+/// no-ops.
 pub fn draw_arm_cue(fb: &mut Framebuffer, cell_x: i32, cell_y: i32, cell_h: u32) {
     if cell_x < 0 || cell_y < 0 {
         return;
