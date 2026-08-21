@@ -8,6 +8,16 @@ local stubs = require("stubs")
 local KfxDeDRM = assert(loadfile(harness.PLUGIN .. "/main.lua"))()
 check("main.lua returns a plugin on a Kindle", KfxDeDRM.name == "kfxdedrm", KfxDeDRM.name)
 
+-- `PluginLoader` copies every key of `_meta.lua` but `name` onto the module.
+-- `loadfile` above skips that, so the spec does it.
+local meta = assert(loadfile(harness.PLUGIN .. "/_meta.lua"))()
+for key, value in pairs(meta) do
+    if key ~= "name" then KfxDeDRM[key] = value end
+end
+check("the metadata carries a version", type(meta.version) == "string" and #meta.version > 0)
+check("and a description for the plugin list",
+    type(meta.description) == "string" and #meta.description > 0)
+
 local registered
 local plugin = KfxDeDRM:new{
     ui = { menu = { registerToMainMenu = function(_self, p) registered = p end } },
@@ -156,6 +166,8 @@ plugin.cfg.scan_dirs = {}
 eq("no folder at all", plugin:foldersSummary(), "no folder")
 
 local about = plugin:aboutText()
+check("the about screen opens on this plugin's own build",
+    about:find(meta.version, 1, true) ~= nil, about)
 check("the about screen names the output folder", about:find("/mnt/us/dedrm", 1, true))
 check("and the settings file", about:find("config.txt", 1, true))
 

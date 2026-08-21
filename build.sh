@@ -25,8 +25,9 @@ if ! rustup target list --installed | grep -qx "$TARGET"; then
     exit 1
 fi
 
-# [workspace.package] holds the version; the binary reads it through
-# CARGO_PKG_VERSION. VERSION covers the banner and the config.xml check.
+# [workspace.package] is the one place the version is edited. The binary reads
+# it through CARGO_PKG_VERSION; the two files below cannot read Cargo.toml, so
+# `stamp` writes it into them.
 VERSION="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0}
                 f && /^version *=/{gsub(/[" ]/,""); sub(/^version=/,""); print; exit}' \
     "$ROOT/Cargo.toml")"
@@ -45,11 +46,37 @@ chmod +x "$ROOT/device/extensions/kfxdedrm-fe/bin/launch.sh" 2>/dev/null || true
 echo "==> staged $(ls -lh "$OUT" | awk '{print $5}') -> device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe"
 file "$OUT" 2>/dev/null || true
 
-# KUAL reads the version from config.xml, which is written by hand.
-CONFIG="$ROOT/device/extensions/kfxdedrm-fe/config.xml"
-if ! grep -q "<version>$VERSION</version>" "$CONFIG" 2>/dev/null; then
-    echo "warning: $CONFIG does not say <version>$VERSION</version>" >&2
-fi
+# `want` into `file`, replacing whatever `match` finds there.
+#
+# Neither file can read Cargo.toml, and a copy of the version that has to be
+# remembered is a copy that gets forgotten, so this writes them both. A file
+# that already carries the version is left alone: building a clean tree leaves
+# it clean.
+stamp() {
+    file="$1"
+    match="$2"
+    want="$3"
+    if [ ! -f "$file" ] || ! grep -q "$match" "$file"; then
+        echo "warning: $file carries no version line to stamp" >&2
+        return 0
+    fi
+    sed "s|$match|$want|" "$file" > "$file.stamp"
+    if cmp -s "$file" "$file.stamp"; then
+        rm -f "$file.stamp"
+    else
+        mv "$file.stamp" "$file"
+        echo "==> stamped $VERSION into ${file#"$ROOT/"}"
+    fi
+}
+
+# KUAL reads this one and shows it in the extension list.
+stamp "$ROOT/device/extensions/kfxdedrm-fe/config.xml" \
+    '<version>[^<]*</version>' "<version>$VERSION</version>"
+
+# KOReader reads nothing from the plugin's; its own `Where things are` screen
+# is what names the build a bug report came from.
+stamp "$ROOT/koplugin/kfxdedrm.koplugin/_meta.lua" \
+    '^\( *\)version = "[^"]*",' "\1version = \"$VERSION\","
 
 # The `# Icon:` line is a ~23KB base64 blob from device/make-tile.sh, which
 # needs rsvg-convert and pngquant. Rewriting it per build churns that line into

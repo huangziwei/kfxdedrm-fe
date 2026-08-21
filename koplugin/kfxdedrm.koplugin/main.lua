@@ -611,6 +611,11 @@ local function installed_tag(key)
     return tag and ("  (" .. tag .. ")") or ""
 end
 
+--- What is installed and where it writes.
+---
+--- Opens on this plugin's own build: `_meta.lua` carries the version and
+--- `PluginLoader` copies it onto the module, so a copy loaded any other way
+--- has none to name.
 function KfxDeDRM:aboutText()
     local exe, missing = self:getEngine()
     local engine_line = exe and (T(_("Engine: %1"), exe) .. installed_tag("engine"))
@@ -619,6 +624,8 @@ function KfxDeDRM:aboutText()
             or T(_("Engine: no build in %1 runs here"), Engine.BIN_DIR))
     local converter = self:getConverter()
     return table.concat({
+        self.version and T("%1 %2", self.fullname, self.version) or self.fullname,
+        "",
         engine_line,
         converter and (T(_("bokai: %1"), converter) .. installed_tag("bokai"))
             or T(_("bokai: not installed at %1"), Convert.BIN_PATH),
