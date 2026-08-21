@@ -215,4 +215,37 @@ function Reader:close() end
 
 modules["ffi/archiver"] = { Reader = Reader }
 
+--------------------------------------------------------------------------------
+-- luasettings / datastorage, in memory
+--------------------------------------------------------------------------------
+
+local settings_files = {}
+local LuaSettings = {}
+LuaSettings.__index = LuaSettings
+
+function LuaSettings:open(path)
+    if not settings_files[path] then
+        settings_files[path] = setmetatable({ data = {} }, LuaSettings)
+    end
+    return settings_files[path]
+end
+
+function LuaSettings:readSetting(key, default)
+    if self.data[key] == nil then return default end
+    return self.data[key]
+end
+
+function LuaSettings:saveSetting(key, value)
+    self.data[key] = value
+    return self
+end
+
+function LuaSettings:flush() end
+
+modules["luasettings"] = LuaSettings
+modules["datastorage"] = {
+    getDataDir = function() return os.getenv("KFXDEDRM_SPEC") .. "/cache" end,
+    getSettingsDir = function() return os.getenv("KFXDEDRM_SPEC") .. "/cache" end,
+}
+
 return modules

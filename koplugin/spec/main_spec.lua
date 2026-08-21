@@ -72,6 +72,52 @@ eq("a stopped batch names what it left", KfxDeDRM.summary(2, 0, 3), "Decrypted 2
 eq("a stopped batch that also failed", KfxDeDRM.summary(1, 1, 2),
     "Decrypted 1, 1 failed\nStopped, 2 left — see the log")
 
+-- One row fetches both add-ons, and it leaves the menu standing: the tap after
+-- it should be "Books…", not another descent through the menu.
+local dep_rows = 0
+for _, item in ipairs(root.sub_item_table) do
+    if item.text and item.text:find("kfxdedrm and bokai", 1, true) then
+        dep_rows = dep_rows + 1
+        check("the add-on row keeps the menu open", item.keep_menu_open == true)
+    end
+end
+eq("one row covers both add-ons", dep_rows, 1)
+
+-- fetchOne's outcomes, with the network stood in for.
+local Install = require("lib.install")
+local engine_source = Install.source("engine")
+local real_available, real_run = Install.available, Install.run
+local function nostep() end
+
+plugin.engine_probed, plugin.engine_exe = true, "/fake/bin/kfxdedrmhf_c11"
+
+Install.available = function() return nil, "no reply" end
+check("a release list that cannot be read is reported",
+    plugin:fetchOne(engine_source, nostep):find("no reply", 1, true) ~= nil)
+
+Install.available = function() return { tag = "v10.0.30", name = "kfxdedrmmobi.zip" } end
+Install.rememberTag("engine", "v10.0.30")
+eq("an install already at that release is left alone",
+    plugin:fetchOne(engine_source, nostep), "kfxdedrm: already at v10.0.30")
+
+Install.rememberTag("engine", "v10.0.29")
+Install.run = function() return nil, "download failed" end
+check("a failed install says why",
+    plugin:fetchOne(engine_source, nostep):find("download failed", 1, true) ~= nil)
+eq("and the older tag stands", Install.installedTag("engine"), "v10.0.29")
+
+Install.run = function(_source, release) return release.tag end
+eq("a fresh install names what landed",
+    plugin:fetchOne(engine_source, nostep), "kfxdedrm: installed v10.0.30")
+eq("and records it", Install.installedTag("engine"), "v10.0.30")
+
+-- The status screen is the one place an installed release is named.
+check("the status screen names the installed release",
+    plugin:aboutText():find("v10.0.30", 1, true) ~= nil)
+
+Install.available, Install.run = real_available, real_run
+plugin.engine_probed, plugin.engine_exe = nil, nil
+
 -- The strings a missing install shows.
 local Engine = require("lib.engine")
 local Convert = require("lib.convert")
@@ -79,6 +125,8 @@ local not_installed = plugin:engineMissingText(Engine.NOT_INSTALLED)
 check("the not-installed screen names the asset", not_installed:find(Engine.RELEASE_ASSET, 1, true))
 check("and the releases page", not_installed:find(Engine.RELEASES_URL, 1, true))
 check("and where it goes", not_installed:find(Engine.EXTENSION_DIR, 1, true))
+check("and points at the row that fetches it",
+    not_installed:find("Download or update kfxdedrm and bokai", 1, true) ~= nil)
 local broken = plugin:engineMissingText(Engine.NO_WORKING_BUILD)
 check("a broken install says re-download", broken:find("Re%-download") ~= nil)
 check("and counts the builds it tried", broken:find("4", 1, true) ~= nil)

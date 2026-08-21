@@ -144,7 +144,7 @@ function KfxDeDRM:engineMissingText(reason)
         "",
         T(_("2.  Unzip it onto the Kindle as  %1/"), Engine.EXTENSION_DIR),
         "",
-        _("Or let this plugin fetch it: “Download and install kfxdedrm”."),
+        _("Or let this plugin fetch it: “Download or update kfxdedrm and bokai”."),
     }, "\n")
 end
 
@@ -157,7 +157,7 @@ function KfxDeDRM:bokaiMissingText()
         "",
         T(_("2.  Unzip it onto the Kindle as  %1/"), Convert.EXTENSION_DIR),
         "",
-        _("Or let this plugin fetch it: “Download and install bokai”."),
+        _("Or let this plugin fetch it: “Download or update kfxdedrm and bokai”."),
     }, "\n")
 end
 
@@ -467,58 +467,55 @@ function KfxDeDRM:isInstalled(source)
     return self:getConverter() ~= nil
 end
 
-function KfxDeDRM:installRowText(key)
-    local source = Install.source(key)
-    if not self:isInstalled(source) then
-        return T(_("Download and install %1"), source.name)
+--- One summary line for `source`: what it is now, or why it is not.
+function KfxDeDRM:fetchOne(source, step)
+    local release, err = Install.available(source)
+    if not release then
+        return T(_("%1: could not read the release list (%2)"), source.name, err)
     end
-    local tag = Install.installedTag(key)
-    if tag then
-        return T(_("Update %1 (%2 installed)"), source.name, tag)
+
+    if Install.installedTag(source.key) == release.tag and self:isInstalled(source) then
+        return T(_("%1: already at %2"), source.name, release.tag)
     end
-    -- Installed by hand, or by a copy of this plugin that did not record it.
-    -- Neither binary reports a version, so there is nothing to name.
-    return T(_("Update %1"), source.name)
+
+    local tag, failure = Install.run(source, release, step)
+    if not tag then
+        return T(_("%1: %2"), source.name, failure)
+    end
+    Install.rememberTag(source.key, tag)
+    return T(_("%1: installed %2"), source.name, tag)
 end
 
---- Ask GitHub what is published, then `Install.run` if it is not what is here.
+--- Both add-ons in one pass: ask GitHub about each, install whatever is not
+--- already current, and report the two together.
+---
+--- The menu row that calls this sets `keep_menu_open`, so the summary leaves
+--- the plugin menu standing with `Books…` at the top of it. Both belong
+--- together: a caller that closes the menu makes decrypting the next descent
+--- through it rather than the next tap.
 ---
 --- The whole thing blocks: the release list and the download are plain requests
 --- and there is nothing to poll them against. The banner therefore reports
 --- steps and offers no stop, which is why each `Trapper:info` here skips the
 --- dismiss check -- a Pause box that could not take effect would only lie.
-function KfxDeDRM:installOrUpdate(key)
-    local source = Install.source(key)
+function KfxDeDRM:fetchDependencies()
     local NetworkMgr = require("ui/network/manager")
 
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
-            local function step(text)
-                Trapper:info(text, false, true)
-            end
-            local function done(text)
-                Trapper:clear()
-                UIManager:show(InfoMessage:new{ text = text })
-            end
-
-            step(T(_("Asking GitHub about %1…"), source.name))
-            local release, err = Install.available(source)
-            if not release then
-                return done(T(_("Could not read the release list for %1.\n%2"), source.name, err))
+            local total = #Install.SOURCES
+            local lines = {}
+            for i, source in ipairs(Install.SOURCES) do
+                local function step(text)
+                    Trapper:info(T("%1 (%2/%3)\n\n%4", source.name, i, total, text), false, true)
+                end
+                step(_("Asking GitHub…"))
+                lines[#lines + 1] = self:fetchOne(source, step)
             end
 
-            if Install.installedTag(key) == release.tag and self:isInstalled(source) then
-                return done(T(_("%1 is up to date (%2)."), source.name, release.tag))
-            end
-
-            local tag, failure = Install.run(source, release, step)
-            if not tag then
-                return done(T(_("%1 was not installed.\n%2"), source.name, failure))
-            end
-
-            Install.rememberTag(key, tag)
             self:reprobe()
-            done(T(_("%1 %2 installed."), source.name, tag))
+            Trapper:clear()
+            UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
         end)
     end)
 end
@@ -605,16 +602,26 @@ function KfxDeDRM:alsoWriteItems()
     return items
 end
 
+--- The release this plugin fetched for `key`, in a form to hang off a path.
+---
+--- Empty for a copy installed by hand: neither binary reports a version, so
+--- there is nothing to name.
+local function installed_tag(key)
+    local tag = Install.installedTag(key)
+    return tag and ("  (" .. tag .. ")") or ""
+end
+
 function KfxDeDRM:aboutText()
     local exe, missing = self:getEngine()
-    local engine_line = exe and T(_("Engine: %1"), exe)
+    local engine_line = exe and (T(_("Engine: %1"), exe) .. installed_tag("engine"))
         or (missing == Engine.NOT_INSTALLED
             and T(_("Engine: not installed at %1"), Engine.BIN_DIR)
             or T(_("Engine: no build in %1 runs here"), Engine.BIN_DIR))
     local converter = self:getConverter()
     return table.concat({
         engine_line,
-        converter and T(_("bokai: %1"), converter) or T(_("bokai: not installed at %1"), Convert.BIN_PATH),
+        converter and (T(_("bokai: %1"), converter) .. installed_tag("bokai"))
+            or T(_("bokai: not installed at %1"), Convert.BIN_PATH),
         "",
         T(_("Decrypted books land in %1."), Config.OUT_DIR),
         T(_("Settings file: %1"), Config.PATH),
@@ -676,12 +683,9 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 separator = true,
             },
             {
-                text_func = function() return self:installRowText("engine") end,
-                callback = function() self:installOrUpdate("engine") end,
-            },
-            {
-                text_func = function() return self:installRowText("bokai") end,
-                callback = function() self:installOrUpdate("bokai") end,
+                text = _("Download or update kfxdedrm and bokai"),
+                keep_menu_open = true,
+                callback = function() self:fetchDependencies() end,
                 separator = true,
             },
             {
