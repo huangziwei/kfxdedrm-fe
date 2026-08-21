@@ -1,0 +1,23 @@
+# kfxdedrm-fe settings. Rewritten whenever the Settings panel is used, so
+# comments you add here will not survive; the values will.
+
+# Where to look for books, one line per folder, each read one level deep.
+# Settings offers a chip for every folder under /mnt/us/documents that holds
+# a DRM'd book. An empty value selects none.
+scan_dir =
+
+# Which formats to list. KFX books are listed when their .sdr voucher is
+# present; MOBI-family books when their own header says they carry DRM, so
+# DRM-free sideloads never appear.
+types_kfx = false
+types_mobi = true
+
+# Extra formats, written into /mnt/us/dedrm beside the engine's own output. Both
+# need the bokai add-on at /mnt/us/extensions/bokai; without it they are ignored.
+#   pack_kfx      merge the .kfx-zip bundle into one .kfx container
+#   convert_epub  convert the book to .epub
+pack_kfx = true
+convert_epub = true
+
+# Keep finished books in the grid, marked with a check.
+show_done = false

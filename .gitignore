@@ -5,3 +5,6 @@ artifacts/
 /target
 ref/
 device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe
+
+# The two release archives koplugin/spec/run.sh downloads to test against.
+koplugin/spec/cache/

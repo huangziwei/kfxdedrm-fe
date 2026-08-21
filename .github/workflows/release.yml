@@ -10,8 +10,9 @@
 # as CARGO_PKG_VERSION and appears in the startup line in
 # /mnt/us/logs/kfxdedrm-fe.log.
 #
-# A runner needs the cross target and nothing else: no sysroot, no C toolchain.
-# build.sh is the script a workstation runs. The zip is made here alone.
+# A runner needs the cross target and luajit, and nothing else: no sysroot, no
+# C toolchain. build.sh is the script a workstation runs. The zips are made here
+# alone -- one for the standalone app, one for the KOReader plugin.
 
 name: Release
 
@@ -68,6 +69,14 @@ jobs:
             - name: Build the device tree
               run: ./build.sh
 
+            # The plugin's suite is plain LuaJIT over stubbed KOReader
+            # modules; `unzip` for its archive reader is already on the runner.
+            - name: Test the KOReader plugin
+              run: |
+                  sudo apt-get update -qq
+                  sudo apt-get install -y --no-install-recommends luajit
+                  ./koplugin/spec/run.sh
+
             - name: Package
               id: package
               env:
@@ -87,7 +96,17 @@ jobs:
                   # and `sha256sum -c` works where the two land.
                   (cd "$RUNNER_TEMP" && sha256sum "$name.zip" > "$name.zip.sha256")
                   echo "name=$name" >> "$GITHUB_OUTPUT"
-                  ls -lh "$RUNNER_TEMP/$name.zip"
+
+                  # The KOReader plugin, the repository's other frontend. Zipped
+                  # from inside koplugin/ so the archive opens onto
+                  # kfxdedrm.koplugin/, which is what goes into
+                  # koreader/plugins/. spec/ is the host suite and stays out.
+                  ko="kfxdedrm-koplugin-$(echo "$VERSION" | tr / -)"
+                  (cd koplugin && zip -qr "$RUNNER_TEMP/$ko.zip" kfxdedrm.koplugin -x '*.DS_Store')
+                  zip -q "$RUNNER_TEMP/$ko.zip" LICENSE
+                  (cd "$RUNNER_TEMP" && sha256sum "$ko.zip" > "$ko.zip.sha256")
+                  echo "ko=$ko" >> "$GITHUB_OUTPUT"
+                  ls -lh "$RUNNER_TEMP/$name.zip" "$RUNNER_TEMP/$ko.zip"
 
             # `--clobber` replaces an asset of the same name.
             - name: Attach to the release
@@ -96,10 +115,13 @@ jobs:
                   GH_TOKEN: ${{ github.token }}
                   TAG: ${{ github.event.release.tag_name }}
                   NAME: ${{ steps.package.outputs.name }}
+                  KO: ${{ steps.package.outputs.ko }}
               run: |
                   gh release upload "$TAG" \
                     "$RUNNER_TEMP/$NAME.zip" \
                     "$RUNNER_TEMP/$NAME.zip.sha256" \
+                    "$RUNNER_TEMP/$KO.zip" \
+                    "$RUNNER_TEMP/$KO.zip.sha256" \
                     --clobber
 
             - name: Keep the tree from a manual run
@@ -110,3 +132,4 @@ jobs:
                   path: |
                       device/extensions
                       device/documents
+                      koplugin/kfxdedrm.koplugin

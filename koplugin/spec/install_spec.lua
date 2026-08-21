@@ -1,0 +1,112 @@
+-- lib/install's decisions, against the release lists GitHub actually serves
+-- and the two archives it actually publishes.
+local harness = require("harness")
+local check, eq, eqlist = harness.check, harness.eq, harness.eqlist
+
+local Install = require("lib.install")
+local fixtures = require("fixtures.releases")
+
+
+local engine = Install.source("engine")
+local bokai = Install.source("bokai")
+check("both sources are named", engine ~= nil and bokai ~= nil)
+eq("an unknown key resolves to nothing", Install.source("nope"), nil)
+
+--------------------------------------------------------------------------------
+-- pickRelease
+--------------------------------------------------------------------------------
+
+local tag, url, name, sha = Install.pickRelease(fixtures.dedrm, engine)
+eq("the engine comes off the newest release carrying its asset", tag, "v10.0.30")
+eq("and it is the mobi-capable asset", name, "kfxdedrmmobi.zip")
+check("with a download url", url and url:find("kfxdedrmmobi.zip", 1, true) ~= nil, url)
+eq("that release publishes no checksum", sha, nil)
+
+-- Why /releases/latest is the wrong endpoint: it returns the newest release
+-- that is not a prerelease, and no such release has ever carried the engine.
+local carrying, stable_with_asset = 0, 0
+for _, r in ipairs(fixtures.dedrm) do
+    local has = false
+    for _, a in ipairs(r.assets) do
+        if a.name:match(engine.asset) then has = true end
+    end
+    if has then
+        carrying = carrying + 1
+        check("a release carrying the engine is a prerelease: " .. r.tag_name, r.prerelease == true)
+        if not r.prerelease then stable_with_asset = stable_with_asset + 1 end
+    end
+end
+check("several releases carry it", carrying > 1, carrying)
+eq("and none of them is what /releases/latest would return", stable_with_asset, 0)
+
+-- bokai: whichever release is newest at the time, taken by asset pattern.
+local btag, burl, bname, bsha = Install.pickRelease(fixtures.sidle, bokai)
+local expected_tag, expected_asset
+for _, r in ipairs(fixtures.sidle) do
+    for _, a in ipairs(r.assets) do
+        if not expected_tag and a.name:match(bokai.asset) then
+            expected_tag, expected_asset = r.tag_name, a.name
+        end
+    end
+end
+eq("bokai comes off the newest release carrying its asset", btag, expected_tag)
+eq("named by pattern, not by version", bname, expected_asset)
+check("with a download url", burl ~= nil)
+check("and that one publishes a checksum", bsha ~= nil and bsha:find(".sha256", 1, true) ~= nil, bsha)
+-- A tag can be published before its assets finish uploading; such a release
+-- must not be picked over the last one that is whole.
+local half_published = { { tag_name = "bokai-v9.9.9", assets = {} } }
+for _, r in ipairs(fixtures.sidle) do half_published[#half_published + 1] = r end
+eq("a release with no assets yet is passed over",
+    Install.pickRelease(half_published, bokai), expected_tag)
+
+eq("a list with nothing matching picks nothing", Install.pickRelease({
+    { tag_name = "v1", assets = { { name = "source.zip", browser_download_url = "u" } } },
+}, engine), nil)
+eq("an empty list picks nothing", Install.pickRelease({}, engine), nil)
+eq("a nil list picks nothing", Install.pickRelease(nil, engine), nil)
+eq("a draft is skipped", Install.pickRelease({
+    { tag_name = "v2", draft = true, assets = { { name = "kfxdedrmmobi.zip", browser_download_url = "u" } } },
+}, engine), nil)
+
+--------------------------------------------------------------------------------
+-- prefixFor, against the real archive listings
+--------------------------------------------------------------------------------
+
+local kfx_zip = {
+    "kfxdedrm/", "kfxdedrm/bin/",
+    "kfxdedrm/bin/kfxdedrmhf_c11", "kfxdedrm/bin/kfxdedrmhf_old",
+    "kfxdedrm/bin/kfxdedrm_c11", "kfxdedrm/bin/kfxdedrm_old",
+    "kfxdedrm/bin/run_cmd.sh", "kfxdedrm/config.xml", "kfxdedrm/menu.json",
+}
+local bokai_zip = {
+    "extensions/bokai/", "extensions/bokai/bin/",
+    "extensions/bokai/bin/bokai", "extensions/bokai/config.xml",
+}
+eq("kfxdedrmmobi.zip unpacks out of its own folder",
+    Install.prefixFor(kfx_zip, engine.marker), "kfxdedrm/")
+eq("bokai's zip unpacks out of a deeper one",
+    Install.prefixFor(bokai_zip, bokai.marker), "extensions/bokai/")
+eq("an archive rooted on the marker has no prefix",
+    Install.prefixFor({ "bin/bokai", "config.xml" }, bokai.marker), "")
+eq("an archive without the marker is refused",
+    Install.prefixFor({ "readme.txt" }, bokai.marker), nil)
+-- The marker is matched as a path suffix, not anywhere in the name.
+eq("a lookalike name is not the marker",
+    Install.prefixFor({ "x/not-bin/bokai-old" }, bokai.marker), nil)
+
+--------------------------------------------------------------------------------
+-- digestFrom
+--------------------------------------------------------------------------------
+
+local d = string.rep("a", 64)
+eq("a sha256sum line", Install.digestFrom(d .. "  bokai-v0.1.2-kindle.zip", "bokai-v0.1.2-kindle.zip"), d)
+eq("with a binary marker", Install.digestFrom(d .. " *file.zip", "file.zip"), d)
+eq("a full path in the line still matches the name",
+    Install.digestFrom(d .. "  /tmp/build/file.zip", "file.zip"), d)
+eq("a bare digest is taken as it is", Install.digestFrom(d .. "\n", "anything.zip"), d)
+eq("uppercase is folded", Install.digestFrom(string.rep("A", 64) .. "  f.zip", "f.zip"), string.rep("a", 64))
+eq("a short digest is not one", Install.digestFrom("abc  f.zip", "f.zip"), nil)
+eq("no text, no digest", Install.digestFrom(nil, "f.zip"), nil)
+
+return harness.report()
