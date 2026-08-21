@@ -12,17 +12,41 @@ end
 
 local lfs = {}
 
+-- `stat` is BSD on a Mac and GNU on Linux, and the two spell their format flag
+-- differently. Probed once, on a path that is always there: GNU answers `-c`
+-- and BSD prints its usage to stderr instead.
+local stat_flags
+local function stat_format()
+    if not stat_flags then
+        local probe = io.popen("stat -c '%F' . 2>/dev/null")
+        local kind = probe and probe:read("*line")
+        if probe then probe:close() end
+        stat_flags = (kind and kind ~= "") and "-L -c '%F|%s|%Y'" or "-L -f '%HT|%z|%m'"
+    end
+    return stat_flags
+end
+
+-- The two name the same kinds in different words, and GNU calls a zero-byte
+-- file a "regular empty file".
+local function mode_of(kind)
+    kind = kind:lower()
+    if kind:find("directory", 1, true) then return "directory" end
+    if kind:find("regular", 1, true) then return "file" end
+    return "other"
+end
+
 function lfs.attributes(path, what)
-    local pipe = io.popen("stat -f '%HT|%z|%m' " .. q(path) .. " 2>/dev/null")
+    local pipe = io.popen("stat " .. stat_format() .. " " .. q(path) .. " 2>/dev/null")
     local line = pipe and pipe:read("*line")
     if pipe then pipe:close() end
     if not line or line == "" then return nil end
     local kind, size, mtime = line:match("^(.-)|(%d+)|(%d+)$")
     if not kind then return nil end
-    local mode = kind == "Directory" and "directory"
-        or kind == "Regular File" and "file"
-        or "other"
-    local attrs = { mode = mode, size = tonumber(size), modification = tonumber(mtime) }
+    local attrs = {
+        mode = mode_of(kind),
+        size = tonumber(size),
+        modification = tonumber(mtime),
+    }
     if what then return attrs[what] end
     return attrs
 end

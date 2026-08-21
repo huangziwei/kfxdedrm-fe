@@ -14,7 +14,10 @@ export KFXDEDRM_SPEC="$SPEC"
 # harness.lua is what puts the plugin on package.path, so it has to be findable
 # before it runs. The trailing `;;` keeps luajit's own default path.
 export LUA_PATH="$SPEC/?.lua;;"
+# Scratch for the whole suite: the two archives below, and the files the specs
+# write while they run.
 CACHE="$SPEC/cache"
+mkdir -p "$CACHE"
 
 command -v luajit >/dev/null 2>&1 || {
     echo "error: luajit is not installed" >&2
