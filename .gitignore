@@ -4,7 +4,6 @@
 artifacts/
 /target
 ref/
-device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe
 
 device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe
 koplugin/spec/cache/
