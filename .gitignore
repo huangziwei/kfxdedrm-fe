@@ -6,5 +6,6 @@ artifacts/
 ref/
 device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe
 
-# The two release archives koplugin/spec/run.sh downloads to test against.
+# The two release archives koplugin/spec/run.sh downloads. Both suites read
+# them: unpack_spec, and native/tests/real_archives.rs.
 koplugin/spec/cache/

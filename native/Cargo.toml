@@ -30,3 +30,45 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # feature pulls `as-raw-xcb-connection`, which links `-lxcb` and breaks the
 # static musl link.
 x11rb = { version = "0.13", default-features = false }
+
+# ureq: small sync HTTP client, for `install`. GitHub is HTTPS-only, so TLS is
+# mandatory.
+#
+# `rustls-no-provider` is load-bearing and the reason this is ureq 3 rather than
+# 2. ureq 2's only TLS feature pulls rustls *with* ring, and Cargo unifies
+# features, so ring's C build script would then run whether or not a byte of it
+# is called — which breaks the pure-Rust rust-lld cross path in
+# .cargo/config.toml. ureq 3 splits the provider out, so we take the plumbing
+# and supply our own crypto below.
+ureq = { version = "3", default-features = false, features = [
+    "rustls-no-provider",
+    "rustls-webpki-roots",
+] }
+# rustls with no provider features of its own — same reason. `tls12` is off:
+# api.github.com and objects.githubusercontent.com both negotiate TLS 1.3.
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+# The crypto provider: RustCrypto's, so the whole graph stays pure Rust and the
+# static musl cross-link keeps working with no C toolchain anywhere.
+#
+# Pinned to git because the crates.io release (0.0.2-alpha) is far behind the
+# repo. This is glue rather than cryptography — it maps `aes-gcm`, `p256`,
+# `rsa`, `*-dalek` and `sha2` onto rustls' provider traits — and it lives under
+# the RustCrypto org. Not independently audited; what a bad download could do
+# here is bounded by `install`, which makes a staged copy run on this device
+# before it replaces anything.
+rustls-rustcrypto = { git = "https://github.com/RustCrypto/rustls-rustcrypto", rev = "7b44a2de957b6596d267a920d3aec0d4137defb1" }
+# webpki-roots: bundled Mozilla root store. A Kindle's own CA bundle is years
+# stale and would reject GitHub's current chain, so we ship our own and never
+# consult the system store.
+webpki-roots = "1"
+# serde + serde_json: the GitHub release list `install::pick_release` reads.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# flate2 + crc32fast: `install::archive` inflates the two release zips and
+# checks each entry against its recorded CRC. Both are already in the graph
+# through `image`'s PNG decoder; `rust_backend` keeps flate2 off zlib's C.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+# sha2: the `.sha256` sidecar bokai publishes beside its asset. Already in the
+# graph through rustls-rustcrypto.
+sha2 = "0.11"

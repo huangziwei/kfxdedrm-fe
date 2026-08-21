@@ -60,6 +60,19 @@ jobs:
                       target
                   key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
+            # The plugin's suite is plain LuaJIT over stubbed KOReader
+            # modules; `unzip` for its archive reader is already on the runner.
+            #
+            # Ahead of `cargo test`: this fetches the two release archives into
+            # koplugin/spec/cache/, which is where native/tests/real_archives.rs
+            # reads them from too. Without them that suite reports what it
+            # skipped and passes.
+            - name: Test the KOReader plugin
+              run: |
+                  sudo apt-get update -qq
+                  sudo apt-get install -y --no-install-recommends luajit
+                  ./koplugin/spec/run.sh
+
             - name: Format, lint, test
               run: |
                   cargo fmt --all --check
@@ -68,14 +81,6 @@ jobs:
 
             - name: Build the device tree
               run: ./build.sh
-
-            # The plugin's suite is plain LuaJIT over stubbed KOReader
-            # modules; `unzip` for its archive reader is already on the runner.
-            - name: Test the KOReader plugin
-              run: |
-                  sudo apt-get update -qq
-                  sudo apt-get install -y --no-install-recommends luajit
-                  ./koplugin/spec/run.sh
 
             - name: Package
               id: package

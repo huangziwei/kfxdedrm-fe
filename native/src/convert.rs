@@ -2,8 +2,9 @@
 //! settings ask of it, [`Converter::convert`] to run one [`Step`].
 //!
 //! bokai is an add-on, not a dependency: [`locate`] returning `None` leaves
-//! the app decrypting and doing nothing else. It is installed by hand, the way
-//! `crate::engine`'s extension is, and lands beside it under `/mnt/us/extensions/`.
+//! the app decrypting and doing nothing else. `crate::install` fetches it from
+//! the release named by [`RELEASES_URL`], into an extension of its own beside
+//! `crate::engine`'s under `/mnt/us/extensions/`.
 //!
 //! The converter's command surface:
 //!
@@ -26,11 +27,12 @@ pub const EXTENSION_DIR: &str = "/mnt/us/extensions/bokai";
 /// The one binary the zip installs.
 pub const BIN_PATH: &str = "/mnt/us/extensions/bokai/bin/bokai";
 
-/// Shown verbatim by [`crate::ui::configmenu`]: the panel has no browser and
-/// the string is transcribed by hand.
+/// Where `install::SOURCES` fetches it from, and what the log names when that
+/// fails and it has to be done by hand instead.
 pub const RELEASES_URL: &str = "github.com/huangziwei/sidle/releases";
 /// The asset, `*` standing for the version. bokai versions on its own line
-/// and moves without this app moving, so no one version belongs here.
+/// and moves without this app moving, so no one version belongs here — which
+/// is why `install` matches it by pattern rather than by name.
 pub const RELEASE_ASSET: &str = "bokai-*-kindle.zip";
 
 /// Extensions bokai reads.

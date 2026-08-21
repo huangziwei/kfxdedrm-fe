@@ -367,26 +367,76 @@ end
 -- Which release is on the device
 --------------------------------------------------------------------------------
 
---- The tags this plugin installed, kept on KOReader's side.
+--- Where both frontends record what they installed.
 ---
---- Not in the settings file `lib/config` shares with the native frontend: that
---- format is the native frontend's, and a key it does not know is a key its
---- next save drops. Neither binary reports its own version either, so an
---- install this plugin did not make reads as unknown.
-function Install.settings()
-    local DataStorage = require("datastorage")
-    local LuaSettings = require("luasettings")
-    return LuaSettings:open(DataStorage:getSettingsDir() .. "/kfxdedrm_installs.lua")
+--- Shared with `native/`, which reads and writes the same file in the same
+--- format, so one device carries one record and neither frontend fetches what
+--- the other already has.
+---
+--- Its own file rather than a couple of keys in the settings `lib/config`
+--- shares: that format is fixed on both sides and a key one frontend does not
+--- know is a key its next save drops. This one has no such constraint.
+---
+--- Neither binary reports its own version, so an install neither frontend made
+--- reads as unknown.
+Install.RECORD_PATH = "/mnt/us/extensions/kfxdedrm-fe/installs.txt"
+
+--- The file's header, matching `install::record::Record::render` on the Rust
+--- side byte for byte.
+local RECORD_HEADER = table.concat({
+    "# Which release of each add-on is installed. Both frontends write this file,",
+    "# the standalone kfxdedrm-fe app and the KOReader plugin, so neither fetches",
+    "# what the other already has. Delete a line to fetch that one again.",
+    "",
+}, "\n")
+
+--- `key = value` lines. A file that is not there is an empty record, and a
+--- line without both halves is no record of anything.
+function Install.record(path)
+    local tags = {}
+    local file = io.open(path or Install.RECORD_PATH, "r")
+    if not file then return tags end
+    for line in file:lines() do
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" and line:sub(1, 1) ~= "#" then
+            local key, value = line:match("^(.-)%s*=%s*(.-)$")
+            if key and key ~= "" and value ~= "" then
+                tags[key:match("^%s*(.-)%s*$")] = value
+            end
+        end
+    end
+    file:close()
+    return tags
 end
 
-function Install.installedTag(key)
-    return Install.settings():readSetting(key)
+--- `tags` back out, keys in order, under `RECORD_HEADER`.
+function Install.renderRecord(tags)
+    local keys = {}
+    for key in pairs(tags) do keys[#keys + 1] = key end
+    table.sort(keys)
+
+    local out = { RECORD_HEADER }
+    for _, key in ipairs(keys) do
+        out[#out + 1] = key .. " = " .. tags[key] .. "\n"
+    end
+    return table.concat(out)
 end
 
-function Install.rememberTag(key, tag)
-    local settings = Install.settings()
-    settings:saveSetting(key, tag)
-    settings:flush()
+function Install.installedTag(key, path)
+    return Install.record(path)[key]
+end
+
+function Install.rememberTag(key, tag, path)
+    path = path or Install.RECORD_PATH
+    local tags = Install.record(path)
+    tags[key] = tag
+    local file = io.open(path, "w")
+    if not file then
+        logger.warn("kfxdedrm: cannot write", path)
+        return
+    end
+    file:write(Install.renderRecord(tags))
+    file:close()
 end
 
 return Install

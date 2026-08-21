@@ -30,7 +30,8 @@ pub const EXTENSION_DIR: &str = "/mnt/us/extensions/kfxdedrm";
 /// Where the engine's four ABI builds live.
 pub const BIN_DIR: &str = "/mnt/us/extensions/kfxdedrm/bin";
 
-/// Shown verbatim by [`crate::ui::setup`].
+/// Shown verbatim by [`crate::ui::setup`], and where `install::SOURCES`
+/// fetches the engine from.
 pub const RELEASES_URL: &str = "github.com/Satsuoni/DeDRM_tools/releases";
 /// The MOBI-capable asset. `kfxdedrm_kual.zip` covers KFX alone.
 pub const RELEASE_ASSET: &str = "kfxdedrmmobi.zip";

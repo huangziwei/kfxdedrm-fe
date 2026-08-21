@@ -89,6 +89,11 @@ local engine_source = Install.source("engine")
 local real_available, real_run = Install.available, Install.run
 local function nostep() end
 
+-- The record is a real file shared with native/, so the spec keeps its own
+-- rather than writing to /mnt/us.
+Install.RECORD_PATH = harness.SPEC .. "/cache/installs.txt"
+os.remove(Install.RECORD_PATH)
+
 plugin.engine_probed, plugin.engine_exe = true, "/fake/bin/kfxdedrmhf_c11"
 
 Install.available = function() return nil, "no reply" end
@@ -116,6 +121,7 @@ check("the status screen names the installed release",
     plugin:aboutText():find("v10.0.30", 1, true) ~= nil)
 
 Install.available, Install.run = real_available, real_run
+os.remove(Install.RECORD_PATH)
 plugin.engine_probed, plugin.engine_exe = nil, nil
 
 -- The strings a missing install shows.

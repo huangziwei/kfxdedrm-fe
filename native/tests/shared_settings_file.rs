@@ -1,16 +1,19 @@
-//! `Config::render` against the fixtures the KOReader plugin's own suite reads.
+//! The two files both frontends write, against the fixtures the KOReader
+//! plugin's own suite reads.
 //!
-//! `koplugin/` writes this settings file too, at the same path, so that one
-//! device carries one set of folders and switches whichever frontend is
-//! running. The two renderers have to agree byte for byte: a difference means
-//! each frontend rewrites the other's file every time it saves.
+//! `koplugin/` writes the settings file and the install record too, at the
+//! same two paths, so that one device carries one set of folders and switches
+//! and one record of what is installed whichever frontend is running. The
+//! renderers have to agree byte for byte: a difference means each frontend
+//! rewrites the other's file every time it saves.
 //!
-//! These fixtures are the contract. Changing the format means changing them,
+//! These fixtures are the contract. Changing a format means changing them,
 //! which fails `koplugin/spec` until its renderer is changed to match.
 
 use std::path::{Path, PathBuf};
 
 use kfxdedrm_fe_native::config::Config;
+use kfxdedrm_fe_native::install::record::Record;
 
 fn fixture(name: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -49,4 +52,19 @@ fn the_fixtures_read_back_as_the_settings_that_wrote_them() {
         Config::parse(&fixture("config-no-folder.txt")).scan_dirs,
         Vec::<PathBuf>::new()
     );
+}
+
+#[test]
+fn the_install_record_is_what_the_plugin_expects() {
+    let mut record = Record::default();
+    record.set("bokai", "bokai-v0.1.3");
+    record.set("engine", "v10.0.30");
+    assert_eq!(record.render(), fixture("installs.txt"));
+}
+
+#[test]
+fn the_record_fixture_reads_back_as_the_releases_that_wrote_it() {
+    let record = Record::parse(&fixture("installs.txt"));
+    assert_eq!(record.get("engine"), Some("v10.0.30"));
+    assert_eq!(record.get("bokai"), Some("bokai-v0.1.3"));
 }

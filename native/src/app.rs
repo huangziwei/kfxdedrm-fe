@@ -2,14 +2,17 @@
 //! as a blocking overlay. A held cover runs [`decrypt_one`]; the toolbar runs
 //! [`decrypt_all`].
 //!
-//! [`engine::locate`] failing ends the launch at [`crate::ui::setup`]. [`convert::locate`]
-//! failing costs nothing: `convert::Targets` reads as empty and [`convert_outputs`]
-//! plans no step.
+//! Neither add-on is part of this install. [`engine::locate`] failing opens on
+//! [`crate::ui::setup`], which offers [`install_addons`] and then opens the
+//! grid either way; [`convert::locate`] failing costs nothing at all, since
+//! `convert::Targets` reads as empty and [`convert_outputs`] plans no step.
 //!
 //! No path under `[config::DOCUMENTS_DIR]` is written, moved or removed.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
@@ -23,6 +26,8 @@ use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::{Touch, TouchEvent};
 use crate::engine::{self, Engine};
 use crate::font;
+use crate::install;
+use crate::log;
 use crate::orientation::Orientation;
 use crate::scan::{self, Book};
 use crate::ui::text::TextRenderer;
@@ -46,6 +51,9 @@ const ARM_DWELL: Duration = Duration::from_millis(250);
 const RESULT_LINGER: Duration = Duration::from_millis(1100);
 /// Hint banner time after a release short of [`ARM_THRESHOLD`].
 const HINT_LINGER: Duration = Duration::from_millis(1200);
+/// Result banner time after [`install_addons`], which reports one line per
+/// add-on and is worth reading before the panel takes it away.
+const INSTALL_LINGER: Duration = Duration::from_millis(2600);
 
 /// Floor on `toast::draw` repaints in [`decrypt_one`]. Each is a full-panel
 /// GC16.
@@ -57,19 +65,6 @@ const ENGINE_POLL: Duration = Duration::from_millis(250);
 /// The settings file, beside the binary.
 fn config_path() -> PathBuf {
     Path::new(BUNDLE_DIR).join("config.txt")
-}
-
-/// One line to stderr. `launch.sh` redirects that to [`LOG_PATH`]; opening
-/// [`LOG_PATH`] here too doubles every line.
-fn log(msg: impl AsRef<str>) {
-    eprintln!("[{}] {}", now(), msg.as_ref());
-}
-
-fn now() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "?".into())
 }
 
 fn full_rect(fb: &Framebuffer) -> MxcfbRect {
@@ -736,6 +731,148 @@ fn batch_summary(done: usize, failed: usize, left: usize) -> String {
     }
 }
 
+/// Fetch or update both add-ons, drawing progress, and report what landed.
+///
+/// The work runs on a worker thread. Neither the release list nor the download
+/// is something the panel can poll, and a screen that stops taking taps for a
+/// minute reads as a crash — so the transfer blocks a thread while this loop
+/// keeps `input` drained, repaints the banner as steps arrive, and sets the
+/// flag the download reads between chunks when Cancel is tapped.
+///
+/// Returns the summary to show, one line per add-on.
+fn install_addons(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+) -> anyhow::Result<String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = std::sync::mpsc::channel::<install::Step>();
+    let flag = Arc::clone(&cancel);
+    let worker = std::thread::spawn(move || {
+        install::install_all(
+            &install::record::path(),
+            &|step| {
+                let _ = tx.send(step);
+            },
+            &flag,
+        )
+    });
+
+    let mut title = "Add-ons".to_string();
+    let mut detail = "Asking GitHub…".to_string();
+    let (rect, cancel_rect) = toast::draw_download(fb, renderer, &title, &detail);
+    fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    let mut painted = Instant::now();
+    let mut stale = false;
+
+    loop {
+        while let Ok(step) = rx.try_recv() {
+            title = step.title();
+            detail = step.detail;
+            stale = true;
+        }
+        // Every repaint is a full-banner GC16, and a percentage moves several
+        // times a second. The floor is what keeps that from flashing the panel.
+        if stale && painted.elapsed() >= TOAST_REDRAW_INTERVAL {
+            let (rect, _) = toast::draw_download(fb, renderer, &title, &detail);
+            fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+            painted = Instant::now();
+            stale = false;
+        }
+        // Every step is drained above before this is read, so nothing the
+        // worker sent is lost by leaving here.
+        if worker.is_finished() {
+            break;
+        }
+
+        match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
+            InputEvent::Touch(TouchEvent::Up { x, y })
+                if !cancel.load(Ordering::Relaxed) && toast::contains(cancel_rect, x, y) =>
+            {
+                // The add-on in flight stops at its next chunk; the one after
+                // it is not started. Whatever was already in place stays.
+                cancel.store(true, Ordering::Relaxed);
+                log("add-ons: cancelled");
+                let rect = toast::draw_download_done(fb, renderer, &format!("{title}\nStopping…"));
+                fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+                painted = Instant::now();
+                stale = false;
+            }
+            ev => decrypt_input_event(fb, ev),
+        }
+    }
+
+    let lines = worker
+        .join()
+        .unwrap_or_else(|_| vec!["Add-ons: failed".to_string()]);
+    for line in &lines {
+        log(line);
+    }
+    Ok(lines.join("\n"))
+}
+
+/// [`install_addons`], its summary banner, and the pause to read it.
+fn fetch_addons(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+) -> anyhow::Result<()> {
+    let msg = install_addons(fb, renderer, input)?;
+    let rect = toast::draw_download_done(fb, renderer, &msg);
+    fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    hold(fb, input, INSTALL_LINGER)
+}
+
+/// The banner a decrypt gets when there is no engine to run it.
+fn no_engine_banner(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+) -> anyhow::Result<()> {
+    let rect = toast::draw_download_done(
+        fb,
+        renderer,
+        "kfxdedrm is not installed\nOpen Settings and tap Add-ons",
+    );
+    fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    hold(fb, input, RESULT_LINGER)
+}
+
+/// What the two probes found, into the log.
+fn log_addons(engine: Result<&Engine, engine::Missing>, converter: Option<&Converter>) {
+    match engine {
+        Ok(e) => log(format!("engine: {}", e.exe().display())),
+        Err(reason) => log(format!("engine: {reason:?}")),
+    }
+    match converter {
+        Some(c) => log(format!("converter: {}", c.exe().display())),
+        None => log(format!("converter: none at {}", convert::BIN_PATH)),
+    }
+}
+
+/// What `ui::configmenu` says about the two add-ons: whether each one runs
+/// here, and which release this app fetched for it.
+///
+/// The probes decide what is installed and `record` only names it. A record
+/// left behind by a copy that has since been deleted is not an install, and a
+/// copy installed by hand is one the record has never heard of.
+fn addons_state(
+    record: &install::record::Record,
+    engine: Option<&Engine>,
+    converter: Option<&Converter>,
+) -> configmenu::AddOns {
+    let seen = |present: bool, key: &str| configmenu::AddOn {
+        present,
+        tag: present
+            .then(|| record.get(key).map(str::to_string))
+            .flatten(),
+    };
+    configmenu::AddOns {
+        engine: seen(engine.is_some(), install::SOURCES[0].key),
+        bokai: seen(converter.is_some(), install::SOURCES[1].key),
+    }
+}
+
 pub fn run() -> anyhow::Result<()> {
     log(format!(
         "kfxdedrm-fe {} starting",
@@ -768,26 +905,27 @@ pub fn run() -> anyhow::Result<()> {
     let mut input = Input::new(touch, buttons);
     input.set_orientation(orient);
 
-    // ---- The engine ---------------------------------------------------------
-    let eng = match engine::locate() {
-        Ok(e) => {
-            log(format!("engine: {}", e.exe().display()));
-            e
-        }
-        Err(reason) => {
-            log(format!("engine: {reason:?}"));
-            return setup::run(&mut fb, &mut input, &mut renderer, reason);
-        }
-    };
+    // ---- The engine and the converter --------------------------------------
+    // Neither is part of this install and Settings can fetch both, so a
+    // missing one is a state the app runs in rather than a refusal: the grid
+    // still lists what is there, and `no_engine_banner` is where the engine is
+    // missed. Without the converter `convert::Targets` reads both switches as
+    // off and the app decrypts and stops there.
+    let mut located = engine::locate();
+    let mut converter = convert::locate();
+    log_addons(located.as_ref().map_err(|e| *e), converter.as_ref());
 
-    // ---- The converter ------------------------------------------------------
-    // An add-on. Nothing here fails without it; `convert::Targets` reads both
-    // switches as off and the app decrypts and stops there.
-    let converter = convert::locate();
-    match &converter {
-        Some(c) => log(format!("converter: {}", c.exe().display())),
-        None => log(format!("converter: none at {}", convert::BIN_PATH)),
+    // No engine opens on the offer to fetch one. Either answer opens the app
+    // afterwards; this is where it is easiest to say yes, not a gate.
+    if let Some(reason) = located.as_ref().err().copied()
+        && setup::run(&mut fb, &mut input, &mut renderer, reason)? == setup::Choice::Install
+    {
+        fetch_addons(&mut fb, &mut renderer, &mut input)?;
+        located = engine::locate();
+        converter = convert::locate();
+        log_addons(located.as_ref().map_err(|e| *e), converter.as_ref());
     }
+    let mut eng = located.ok();
 
     // ---- Settings + first scan ---------------------------------------------
     let cfg_path = config_path();
@@ -926,20 +1064,40 @@ pub fn run() -> anyhow::Result<()> {
                         // while the app was open puts a new folder on the page.
                         let folders = scan::candidates(&cfg);
                         log(format!("folders: {folders:?}"));
-                        configmenu::run(
-                            &mut fb,
-                            &mut input,
-                            &mut renderer,
-                            &mut cfg,
-                            &folders,
-                            &mut orient,
-                            converter.is_some(),
-                        )?;
-                        if cfg != before {
-                            if let Err(e) = cfg.store(&cfg_path) {
-                                log(format!("settings save failed: {e}"));
+                        // The panel comes back for one thing other than
+                        // Done, and that one needs the panel it was drawn on:
+                        // fetch, then reopen it showing what landed.
+                        let mut fetched = false;
+                        loop {
+                            let record = install::record::Record::load(&install::record::path());
+                            let addons = addons_state(&record, eng.as_ref(), converter.as_ref());
+                            let exit = configmenu::run(
+                                &mut fb,
+                                &mut input,
+                                &mut renderer,
+                                &mut cfg,
+                                &folders,
+                                &mut orient,
+                                &addons,
+                            )?;
+                            if exit == configmenu::Exit::Done {
+                                break;
                             }
-                            // `Book::done` is read against these.
+                            fetch_addons(&mut fb, &mut renderer, &mut input)?;
+                            let relocated = engine::locate();
+                            converter = convert::locate();
+                            log_addons(relocated.as_ref().map_err(|e| *e), converter.as_ref());
+                            eng = relocated.ok();
+                            fetched = true;
+                        }
+                        if cfg != before
+                            && let Err(e) = cfg.store(&cfg_path)
+                        {
+                            log(format!("settings save failed: {e}"));
+                        }
+                        // `Book::done` is read against these, and an install
+                        // moves them as surely as a tap on a chip does.
+                        if cfg != before || fetched {
                             targets = Targets::new(&cfg, converter.as_ref());
                             rescan!();
                             page = 0;
@@ -947,12 +1105,17 @@ pub fn run() -> anyhow::Result<()> {
                         repaint!();
                     }
                     Some(pager::PagerHit::DecryptAll) => {
+                        let Some(engine) = eng.as_ref() else {
+                            no_engine_banner(&mut fb, &mut renderer, &mut input)?;
+                            repaint!();
+                            continue;
+                        };
                         // `pager::hit` returns `DecryptAll` only above zero `pending`.
                         let msg = decrypt_all(
                             &mut fb,
                             &mut renderer,
                             &mut input,
-                            &eng,
+                            engine,
                             converter.as_ref(),
                             targets,
                             &books,
@@ -1025,6 +1188,15 @@ pub fn run() -> anyhow::Result<()> {
                         continue;
                     }
 
+                    // Ahead of the cue: a hold that animates and then says
+                    // there is nothing to run reads as a failure rather than
+                    // as something not being installed.
+                    let Some(engine) = eng.as_ref() else {
+                        no_engine_banner(&mut fb, &mut renderer, &mut input)?;
+                        repaint!();
+                        continue;
+                    };
+
                     // [`ARM_DWELL`] holds the cue on the panel ahead of the
                     // banner.
                     let (cx, cy) = layout.cell_xy(a.slot);
@@ -1039,7 +1211,7 @@ pub fn run() -> anyhow::Result<()> {
                         &mut fb,
                         &mut renderer,
                         &mut input,
-                        &eng,
+                        engine,
                         converter.as_ref(),
                         targets,
                         &book,
@@ -1116,6 +1288,25 @@ mod tests {
             result_line(&[convert::Kind::Kfx, convert::Kind::Epub]),
             "Decrypted, 2 conversions failed"
         );
+    }
+
+    #[test]
+    fn the_panel_is_told_what_runs_here_and_the_record_only_names_it() {
+        let mut record = install::record::Record::default();
+        record.set("engine", "v10.0.30");
+        record.set("bokai", "bokai-v0.1.3");
+
+        // Nothing runs: a record of what was once fetched is not an install,
+        // and the panel would otherwise name a release of nothing.
+        let none = addons_state(&record, None, None);
+        assert!(!none.engine.present && none.engine.tag.is_none());
+        assert!(!none.bokai.present && none.bokai.tag.is_none());
+
+        // The keys the panel reads are the ones `install` writes, not a second
+        // spelling of them.
+        assert_eq!(install::SOURCES[0].key, "engine");
+        assert_eq!(install::SOURCES[1].key, "bokai");
+        assert_eq!(record.get(install::SOURCES[0].key), Some("v10.0.30"));
     }
 
     #[test]

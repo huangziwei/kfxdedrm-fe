@@ -9,11 +9,15 @@
 //! which folder a firmware downloads into has moved before, and a sideload
 //! folder is whatever its owner named it.
 //!
-//! Blocking sub-loop: [`run`] owns input until a tap on the strip. GC16 on
-//! open and on rotate, a single-row DU on a change that moves nothing else.
+//! The Add-ons row is the one thing here that is not a setting: it returns
+//! [`Exit::Fetch`] instead of changing [`Config`], because the install it
+//! wants needs the panel it is drawn on.
+//!
+//! Blocking sub-loop: [`run`] owns input until a tap on the strip or on that
+//! row. GC16 on open and on rotate, a single-row DU on a change that moves
+//! nothing else.
 
 use crate::config::{self, Config};
-use crate::convert;
 use crate::eink::fb::{Framebuffer, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
@@ -29,8 +33,7 @@ const TITLE_PX: f32 = 44.0;
 ///
 /// `pager::NARROWEST_PANEL_W` less `panel::ROW_INSET` and the right margin,
 /// over the ~half-em advance a proportional face averages at `app::FONT_PX`.
-/// A note is drawn unwrapped: a wrap would split the URL and the path a reader
-/// has to transcribe by hand.
+/// A note is drawn unwrapped: a wrap would split the path it names.
 const NOTE_MAX_CHARS: usize = 55;
 
 /// A row of the page whose chips change a setting.
@@ -47,6 +50,43 @@ pub enum Row {
     Convert,
     /// One toggle.
     ShowDone,
+    /// Not a setting: one chip that leaves the panel with [`Exit::Fetch`].
+    AddOns,
+}
+
+/// Why [`run`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    /// The `[ Done ]` strip.
+    Done,
+    /// The Add-ons row. `app::install_addons` is what it asks for, and the
+    /// panel is reopened after it with whatever landed.
+    Fetch,
+}
+
+/// One add-on as the panel sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddOn {
+    /// Does a copy that runs on this device exist?
+    pub present: bool,
+    /// The release recorded for it, when one is. `None` for a copy installed
+    /// by hand: neither binary reports a version, so there is nothing to name.
+    pub tag: Option<String>,
+}
+
+/// What the Add-ons row says, and what the two convert chips are gated on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddOns {
+    pub engine: AddOn,
+    pub bokai: AddOn,
+}
+
+impl AddOns {
+    /// Whether `convert::locate` found the converter, which is the one thing
+    /// on this page a missing add-on greys out.
+    fn converter(&self) -> bool {
+        self.bokai.present
+    }
 }
 
 /// The format sets the panel offers, as `(label, types_kfx, types_mobi)`.
@@ -115,22 +155,45 @@ fn scan_note(cfg: &Config, folders: &[Candidate]) -> String {
     )
 }
 
-/// Where decrypted books land, or — while the add-on is missing — where to
-/// get it.
+/// Where decrypted books land.
+fn output_note() -> String {
+    format!("Decrypted books land in {}", config::OUT_DIR)
+}
+
+/// The longest a release tag may run in [`addons_note`] before it is cut.
 ///
-/// Not both: the install is the urgent half, `ui::header` names the
-/// destination on every screen the grid draws, and a page has only so many
-/// rows before `panel::Layout` cuts one.
-fn output_note(converter: bool) -> String {
-    if converter {
-        return format!("Decrypted books land in {}", config::OUT_DIR);
+/// Tags come from GitHub and are short — `v10.0.30`, `bokai-v0.1.3` — but the
+/// note is drawn unwrapped and one long one would push the other add-on off
+/// the panel.
+const TAG_MAX_CHARS: usize = 16;
+
+/// What is installed, both add-ons on one line.
+///
+/// This is the whole of what the page says about the install: the row above it
+/// is how either one is fetched, and `ui::setup` is where the engine's own
+/// download URL is spelled out for anyone doing it by hand.
+fn addons_note(addons: &AddOns) -> String {
+    fn one(name: &str, addon: &AddOn) -> String {
+        match (addon.present, addon.tag.as_deref()) {
+            (false, _) => format!("{name} not installed"),
+            (true, Some(tag)) => format!("{name} {}", clip(tag, TAG_MAX_CHARS)),
+            // Installed by hand: it runs, and no release is recorded for it.
+            (true, None) => format!("{name} installed"),
+        }
     }
     format!(
-        "Needs bokai — {}\nUnzip {} into {}/",
-        convert::RELEASES_URL,
-        convert::RELEASE_ASSET,
-        convert::EXTENSION_DIR
+        "{}   ·   {}",
+        one("kfxdedrm", &addons.engine),
+        one("bokai", &addons.bokai)
     )
+}
+
+/// `s` to `max` chars, ellipsized.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max.saturating_sub(1)).chain(['…']).collect()
 }
 
 /// The whole page in draw order, from the settings it shows.
@@ -138,10 +201,11 @@ fn output_note(converter: bool) -> String {
 /// `folders` is `scan::candidates`, which holds every folder already selected
 /// even at zero books — a selection with no chip could not be undone.
 ///
-/// `converter` is whether `convert::locate` found the add-on. The two convert
-/// chips are drawn either way — the setting outlives an install — but greyed
-/// and untappable while it is missing, with the install lines under them.
-pub fn page(cfg: &Config, folders: &[Candidate], converter: bool) -> Page {
+/// `addons` is what `engine::locate` and `convert::locate` found, plus the
+/// releases `install::record` says this app fetched. The two convert chips are
+/// drawn whether or not bokai is there — the setting outlives an install — but
+/// greyed and untappable while it is missing.
+pub fn page(cfg: &Config, folders: &[Candidate], addons: &AddOns) -> Page {
     let mut p = Page {
         items: Vec::new(),
         rows: Vec::new(),
@@ -184,13 +248,25 @@ pub fn page(cfg: &Config, folders: &[Candidate], converter: bool) -> Page {
         Item::Choice {
             label: "Also write".into(),
             chips: vec![
-                Chip::gated("KFX", cfg.pack_kfx, converter),
-                Chip::gated("EPUB", cfg.convert_epub, converter),
+                Chip::gated("KFX", cfg.pack_kfx, addons.converter()),
+                Chip::gated("EPUB", cfg.convert_epub, addons.converter()),
             ],
         },
         Some(Row::Convert),
     );
-    p.push(Item::Note(output_note(converter)), None);
+    p.push(Item::Note(output_note()), None);
+
+    p.push(Item::Heading("Add-ons".into()), None);
+    p.push(
+        Item::Choice {
+            label: "Get".into(),
+            // Never filled: it is a button rather than a setting, and nothing
+            // it does is a state this page could be showing.
+            chips: vec![Chip::new("Download or update", false)],
+        },
+        Some(Row::AddOns),
+    );
+    p.push(Item::Note(addons_note(addons)), None);
 
     p
 }
@@ -225,6 +301,8 @@ fn apply(row: Row, chip: usize, cfg: &mut Config, folders: &[Candidate]) {
             _ => cfg.convert_epub = !cfg.convert_epub,
         },
         Row::ShowDone => cfg.show_done = !cfg.show_done,
+        // `run` leaves the panel on this one before it ever gets here.
+        Row::AddOns => {}
     }
 }
 
@@ -233,10 +311,13 @@ fn title_line_height(renderer: &mut TextRenderer) -> u32 {
     renderer.at_px(TITLE_PX, |r| r.line_height())
 }
 
-/// Owns input until a tap on the `[ Done ]` strip, mutating `cfg` in place.
+/// Owns input until a tap on the `[ Done ]` strip or on the Add-ons row,
+/// mutating `cfg` in place.
 ///
 /// `folders` is fixed for the life of the panel: it names what is on the
-/// device, which a tap here does not change.
+/// device, which a tap here does not change. `addons` is fixed for the same
+/// reason — the tap that would change it is the one that returns
+/// [`Exit::Fetch`].
 pub fn run(
     fb: &mut Framebuffer,
     input: &mut Input,
@@ -244,9 +325,10 @@ pub fn run(
     cfg: &mut Config,
     folders: &[Candidate],
     orient: &mut Orientation,
-    converter: bool,
-) -> anyhow::Result<()> {
-    let mut p = page(cfg, folders, converter);
+    addons: &AddOns,
+) -> anyhow::Result<Exit> {
+    let converter = addons.converter();
+    let mut p = page(cfg, folders, addons);
     let mut layout = layout_for(renderer, fb.var.yres, &p.items);
 
     macro_rules! repaint {
@@ -270,7 +352,7 @@ pub fn run(
         match input.next_event()? {
             InputEvent::Touch(TouchEvent::Up { x, y }) => {
                 if layout.done(y) {
-                    return Ok(());
+                    return Ok(Exit::Done);
                 }
                 let Some(tap) = panel::hit(&p.items, &layout, fb.var.xres, x, y, |s| {
                     renderer.measure_width(s)
@@ -280,10 +362,13 @@ pub fn run(
                 let Some(row) = p.row(tap.item) else {
                     continue;
                 };
+                if row == Row::AddOns {
+                    return Ok(Exit::Fetch);
+                }
 
                 let before = std::mem::take(&mut p.items);
                 apply(row, tap.chip, cfg, folders);
-                p = page(cfg, folders, converter);
+                p = page(cfg, folders, addons);
 
                 // The tapped row alone repaints when nothing else moved. The
                 // Scan row rewrites the note under it, a hidden note changes
@@ -349,9 +434,36 @@ mod tests {
         ]
     }
 
+    /// Both add-ons in place, at the releases this app fetched.
+    fn installed() -> AddOns {
+        AddOns {
+            engine: AddOn {
+                present: true,
+                tag: Some("v10.0.30".into()),
+            },
+            bokai: AddOn {
+                present: true,
+                tag: Some("bokai-v0.1.3".into()),
+            },
+        }
+    }
+
+    /// The engine in place, bokai not — the state the two convert chips grey
+    /// out for.
+    fn no_bokai() -> AddOns {
+        AddOns {
+            bokai: AddOn::default(),
+            ..installed()
+        }
+    }
+
+    fn state(converter: bool) -> AddOns {
+        if converter { installed() } else { no_bokai() }
+    }
+
     /// Every chip of the page, as `(row, label, on, inert)`.
     fn chips(cfg: &Config, converter: bool) -> Vec<(Row, String, bool, bool)> {
-        let p = page(cfg, &folders(), converter);
+        let p = page(cfg, &folders(), &state(converter));
         let mut out = Vec::new();
         for (i, item) in p.items.iter().enumerate() {
             let (Item::Choice { chips, .. }, Some(row)) = (item, p.row(i)) else {
@@ -382,7 +494,7 @@ mod tests {
     fn every_item_either_changes_a_row_or_is_not_a_control() {
         for converter in [true, false] {
             let cfg = Config::default();
-            let p = page(&cfg, &folders(), converter);
+            let p = page(&cfg, &folders(), &state(converter));
             assert_eq!(p.items.len(), p.rows.len());
             for (i, item) in p.items.iter().enumerate() {
                 match item {
@@ -398,8 +510,14 @@ mod tests {
     #[test]
     fn every_row_of_the_page_is_reachable() {
         let cfg = Config::default();
-        let p = page(&cfg, &folders(), true);
-        for row in [Row::Scan, Row::Formats, Row::Convert, Row::ShowDone] {
+        let p = page(&cfg, &folders(), &installed());
+        for row in [
+            Row::Scan,
+            Row::Formats,
+            Row::Convert,
+            Row::ShowDone,
+            Row::AddOns,
+        ] {
             assert!(
                 (0..p.items.len()).any(|i| p.row(i) == Some(row)),
                 "{row:?} is not on the page"
@@ -558,18 +676,78 @@ mod tests {
     }
 
     #[test]
-    fn the_output_note_names_the_folder_or_the_add_on_that_is_missing() {
-        let installed = output_note(true);
-        assert!(installed.contains(config::OUT_DIR));
-        assert_eq!(installed.lines().count(), 1);
+    fn the_output_note_names_where_a_decrypted_book_lands() {
+        let note = output_note();
+        assert!(note.contains(config::OUT_DIR));
+        assert_eq!(note.lines().count(), 1);
+    }
 
-        // The install lines take the row instead; `ui::header` is where the
-        // destination is named on every other screen.
-        let missing = output_note(false);
-        assert!(missing.contains(convert::RELEASES_URL));
-        assert!(missing.contains(convert::RELEASE_ASSET));
-        assert!(missing.contains(convert::EXTENSION_DIR));
-        assert_eq!(missing.lines().count(), 2);
+    #[test]
+    fn the_add_ons_row_is_a_button_and_never_reads_as_a_setting() {
+        let p = page(&Config::default(), &folders(), &installed());
+        let row = (0..p.items.len())
+            .find(|i| p.row(*i) == Some(Row::AddOns))
+            .unwrap();
+        let Item::Choice { chips, .. } = &p.items[row] else {
+            unreachable!()
+        };
+        assert_eq!(chips.len(), 1);
+        assert!(!chips[0].on, "a button has no state to fill");
+        assert!(!chips[0].inert, "and it is always tappable");
+
+        // Nothing it could be handed changes a setting: `run` leaves the panel
+        // before `apply` is reached.
+        let mut cfg = Config::default();
+        let before = cfg.clone();
+        for chip in 0..3 {
+            apply(Row::AddOns, chip, &mut cfg, &folders());
+        }
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn the_add_ons_note_names_both_of_them_and_what_each_one_is() {
+        assert_eq!(
+            addons_note(&installed()),
+            "kfxdedrm v10.0.30   ·   bokai bokai-v0.1.3"
+        );
+        assert_eq!(
+            addons_note(&no_bokai()),
+            "kfxdedrm v10.0.30   ·   bokai not installed"
+        );
+        assert_eq!(
+            addons_note(&AddOns::default()),
+            "kfxdedrm not installed   ·   bokai not installed"
+        );
+        // A copy this app did not fetch runs all the same, and has no release
+        // to name.
+        let by_hand = AddOns {
+            engine: AddOn {
+                present: true,
+                tag: None,
+            },
+            ..AddOns::default()
+        };
+        assert_eq!(
+            addons_note(&by_hand),
+            "kfxdedrm installed   ·   bokai not installed"
+        );
+    }
+
+    #[test]
+    fn a_tag_long_enough_to_push_the_other_add_on_off_the_panel_is_cut() {
+        let long = AddOns {
+            engine: AddOn {
+                present: true,
+                tag: Some("v10.0.30-rc1+build.20260821".into()),
+            },
+            ..installed()
+        };
+        let note = addons_note(&long);
+        assert!(note.contains("bokai bokai-v0.1.3"), "{note}");
+        assert!(note.chars().count() <= NOTE_MAX_CHARS, "{note}");
+        assert_eq!(clip("short", 16), "short");
+        assert_eq!(clip("0123456789abcdefg", 16), "0123456789abcde…");
     }
 
     #[test]
@@ -582,7 +760,7 @@ mod tests {
             ..Config::default()
         };
         let folders = vec![dir("/mnt/base-us/books", 3)];
-        let p = page(&cfg, &folders, true);
+        let p = page(&cfg, &folders, &installed());
         let Item::Choice { chips, .. } = &p.items[1] else {
             unreachable!()
         };
@@ -593,7 +771,10 @@ mod tests {
     #[test]
     fn no_note_line_runs_off_the_narrowest_panel() {
         let mut cfg = Config::default();
-        let mut lines: Vec<String> = output_note(false).lines().map(str::to_string).collect();
+        let mut lines: Vec<String> = vec![output_note()];
+        for addons in [installed(), no_bokai(), AddOns::default()] {
+            lines.push(addons_note(&addons));
+        }
         // Every count the scan note can carry, including none selected.
         for picks in [0usize, 1, 3] {
             cfg.scan_dirs = folders()
@@ -626,12 +807,16 @@ mod tests {
     }
 
     /// The page has to stay a page: `ui::panel` cuts rows at the strip.
+    ///
+    /// The sweep stands in for every face the app might load. `app::FONT_PX`
+    /// is 32 and `TextRenderer::line_height` measures around 40 for it, so
+    /// this covers a face half again as tall as anything that gets loaded.
     #[test]
     fn the_whole_page_fits_the_shortest_panel() {
         let yres = crate::ui::pager::NARROWEST_PANEL_W;
         for converter in [true, false] {
-            let p = page(&Config::default(), &folders(), converter);
-            for lh in 24..=64 {
+            let p = page(&Config::default(), &folders(), &state(converter));
+            for lh in 24..=56 {
                 let layout = Layout::compute(lh, lh * 4 / 3, yres, &p.items);
                 assert_eq!(
                     layout.drawable(),

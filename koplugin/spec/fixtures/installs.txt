@@ -1,0 +1,5 @@
+# Which release of each add-on is installed. Both frontends write this file,
+# the standalone kfxdedrm-fe app and the KOReader plugin, so neither fetches
+# what the other already has. Delete a line to fetch that one again.
+bokai = bokai-v0.1.3
+engine = v10.0.30

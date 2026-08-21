@@ -602,7 +602,7 @@ function KfxDeDRM:alsoWriteItems()
     return items
 end
 
---- The release this plugin fetched for `key`, in a form to hang off a path.
+--- The release either frontend fetched for `key`, in a form to hang off a path.
 ---
 --- Empty for a copy installed by hand: neither binary reports a version, so
 --- there is nothing to name.
@@ -626,7 +626,7 @@ function KfxDeDRM:aboutText()
         T(_("Decrypted books land in %1."), Config.OUT_DIR),
         T(_("Settings file: %1"), Config.PATH),
         "",
-        _("The engine and bokai are separate installs, shared with the standalone kfxdedrm-fe app."),
+        _("The engine and bokai are separate installs, shared with the standalone kfxdedrm-fe app, which fetches and updates them the same way."),
     }, "\n")
 end
 

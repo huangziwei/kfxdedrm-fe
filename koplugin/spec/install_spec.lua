@@ -109,4 +109,48 @@ eq("uppercase is folded", Install.digestFrom(string.rep("A", 64) .. "  f.zip", "
 eq("a short digest is not one", Install.digestFrom("abc  f.zip", "f.zip"), nil)
 eq("no text, no digest", Install.digestFrom(nil, "f.zip"), nil)
 
+--------------------------------------------------------------------------------
+-- The install record, which native/ reads and writes too
+--------------------------------------------------------------------------------
+
+-- `native/tests/shared_settings_file.rs` holds the same fixture from the other
+-- side. The two renderers have to agree byte for byte, or each frontend
+-- rewrites the other's file and re-fetches what is already there.
+local fixture_path = harness.SPEC .. "/fixtures/installs.txt"
+local fixture = assert(io.open(fixture_path, "r"))
+local expected = fixture:read("*all")
+fixture:close()
+
+eq("the record renders the bytes native/ writes",
+    Install.renderRecord({ engine = "v10.0.30", bokai = "bokai-v0.1.3" }), expected)
+
+local read_back = Install.record(fixture_path)
+eq("and reads its own file back", read_back.engine, "v10.0.30")
+eq("both of them", read_back.bokai, "bokai-v0.1.3")
+eq("a tag off the shared file", Install.installedTag("engine", fixture_path), "v10.0.30")
+eq("and nothing for a key it does not name", Install.installedTag("nope", fixture_path), nil)
+
+-- A file that is not there is an empty record, not an error: it is what a
+-- device carries until one of the two frontends fetches something.
+eq("a missing file records nothing", next(Install.record(harness.SPEC .. "/cache/absent.txt")), nil)
+
+local written = harness.SPEC .. "/cache/installs.txt"
+os.remove(written)
+Install.rememberTag("bokai", "bokai-v0.1.3", written)
+Install.rememberTag("engine", "v10.0.30", written)
+local round = assert(io.open(written, "r"))
+eq("a record written a key at a time is the same file", round:read("*all"), expected)
+round:close()
+os.remove(written)
+
+-- A hand-edited file costs only the lines that are wrong.
+local hand = harness.SPEC .. "/cache/hand.txt"
+local out = assert(io.open(hand, "w"))
+out:write("# a comment\n\nengine = v10.0.30\nbokai =\nnonsense\n= orphan\n")
+out:close()
+local edited = Install.record(hand)
+eq("a key with no value is no record", edited.bokai, nil)
+eq("and the good line still reads", edited.engine, "v10.0.30")
+os.remove(hand)
+
 return harness.report()
