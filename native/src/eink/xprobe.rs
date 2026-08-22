@@ -1,5 +1,5 @@
-//! `--probe-x`: dump the X server's extensions, request limits, paint timings
-//! and `/dev/fb0` geometry to [`DUMP_PATH`], in a form two devices diff against
+//! [`run`] dumps the X server's extensions, request limits, paint timings and
+//! `/dev/fb0` geometry to [`OUT_PATH`], in a form two devices diff against
 //! each other.
 
 use std::fmt::Write as _;
