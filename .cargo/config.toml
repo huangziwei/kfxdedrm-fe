@@ -3,9 +3,17 @@
 #
 #   cargo build --release --target armv7-unknown-linux-musleabihf
 #
+# armv7-unknown-linux-musleabi is the same instruction set with the soft-float
+# ABI, `+v7,+thumb2,+soft-float,-neon`, for the Paperwhite 2 generation.
+# `build.sh armsf` is its only caller.
+#
 # `rust-lld` resolves from rustc's own sysroot and needs no PATH entry.
 # `link-self-contained` supplies the musl crt objects. Both hold while no
 # crate in the graph has a C build script.
 [target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes"]
+
+[target.armv7-unknown-linux-musleabi]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=yes"]

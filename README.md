@@ -6,9 +6,12 @@ A frontend for [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) on a jailbrok
 
 ```
 git clone https://github.com/huangziwei/kfxdedrm-fe && cd kfxdedrm-fe/
-rustup target add armv7-unknown-linux-musleabihf
-./build.sh
+rustup target add armv7-unknown-linux-musleabihf armv7-unknown-linux-musleabi
+./build.sh          # hard-float, for the KOA2, Colorsoft and Scribe
+./build.sh armsf    # soft-float, for the Paperwhite 2 generation
 ```
+
+Both land in `device/extensions/kfxdedrm-fe/bin/` and `bin/launch.sh` runs whichever one starts, so a release zip carries the two and no one has to know their device's float ABI. Building just the one your Kindle needs is enough for a hand install.
 
 ## Install
 

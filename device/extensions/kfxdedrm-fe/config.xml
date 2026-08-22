@@ -9,8 +9,8 @@
 <extension>
     <information>
         <name>KFX DeDRM</name>
-        <version>0.3.0</version>
-        <author>hzwei.dev</author>
+        <version>0.4.0</version>
+        <author>Satsuoni</author>
         <id>kfxdedrm-fe</id>
     </information>
     <menus>

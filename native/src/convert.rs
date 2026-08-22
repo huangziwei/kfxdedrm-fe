@@ -1,4 +1,4 @@
-//! [`locate`] the bokai converter at [`BIN_PATH`], [`Targets`] for what the
+//! [`locate`] the bokai converter under [`BIN_DIR`], [`Targets`] for what the
 //! settings ask of it, [`Converter::convert`] to run one [`Step`].
 //!
 //! bokai is an add-on, not a dependency: [`locate`] returning `None` leaves
@@ -24,8 +24,8 @@ use crate::config::Config;
 
 /// The add-on extension's root, distinct from this app's and the engine's.
 pub const EXTENSION_DIR: &str = "/mnt/us/extensions/bokai";
-/// The one binary the zip installs.
-pub const BIN_PATH: &str = "/mnt/us/extensions/bokai/bin/bokai";
+/// Where the zip installs bokai's ABI builds.
+pub const BIN_DIR: &str = "/mnt/us/extensions/bokai/bin";
 
 /// Where `install::SOURCES` fetches it from, and what the log names when that
 /// fails and it has to be done by hand instead.
@@ -34,6 +34,10 @@ pub const RELEASES_URL: &str = "github.com/huangziwei/sidle/releases";
 /// and moves without this app moving, so no one version belongs here — which
 /// is why `install` matches it by pattern rather than by name.
 pub const RELEASE_ASSET: &str = "bokai-*-kindle.zip";
+
+/// bokai's two builds in [`locate_in`] order: hard-float first, soft-float
+/// second. One zip carries both and a device starts one of them.
+pub const ABI_VARIANTS: [&str; 2] = ["bokai", "bokai-armsf"];
 
 /// Extensions bokai reads.
 ///
@@ -47,9 +51,24 @@ pub struct Converter {
     exe: PathBuf,
 }
 
-/// [`locate_at`] over [`BIN_PATH`].
+/// [`ABI_VARIANTS`] under `dir`, in probe order.
+pub fn variant_paths(dir: &Path) -> Vec<PathBuf> {
+    ABI_VARIANTS.iter().map(|n| dir.join(n)).collect()
+}
+
+/// [`locate_in`] over [`BIN_DIR`].
 pub fn locate() -> Option<Converter> {
-    locate_at(Path::new(BIN_PATH))
+    locate_in(Path::new(BIN_DIR))
+}
+
+/// The first [`variant_paths`] entry under `dir` that [`locate_at`] accepts.
+///
+/// Each variant targets a different float ABI, so at most one of them starts
+/// on any one device.
+pub fn locate_in(dir: &Path) -> Option<Converter> {
+    variant_paths(dir)
+        .into_iter()
+        .find_map(|exe| locate_at(&exe))
 }
 
 /// `exe`, if it is a file whose `--version` exits 0.
@@ -221,12 +240,31 @@ impl Converter {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     const BOTH: Targets = Targets {
         kfx: true,
         epub: true,
     };
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("kfxdedrm-fe-convert-{name}"));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A build under `dir` whose `--version` exits `code`, standing in for one
+    /// the loader accepts (`0`) or refuses (anything else).
+    fn variant(dir: &Path, name: &str, code: i32) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
 
     fn kinds(steps: &[Step]) -> Vec<Kind> {
         steps.iter().map(|s| s.kind).collect()
@@ -320,6 +358,52 @@ mod tests {
     #[test]
     fn a_missing_binary_resolves_to_no_converter() {
         assert_eq!(locate_at(Path::new("/nonexistent/bokai")), None);
+        assert_eq!(locate_in(Path::new("/nonexistent/bin")), None);
+    }
+
+    #[test]
+    fn probe_order_puts_the_hard_float_build_first() {
+        let paths = variant_paths(Path::new("/x/bin"));
+        let names: Vec<&str> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        // On a device that starts both, this is the one to run.
+        assert_eq!(names, ["bokai", "bokai-armsf"]);
+    }
+
+    #[test]
+    fn a_soft_float_only_install_still_resolves() {
+        // What is left after unpacking a zip whose hard-float build a device
+        // cannot start: the name `locate` used to look for is not there.
+        let dir = tmpdir("armsf-only");
+        let armsf = variant(&dir, "bokai-armsf", 0);
+        assert_eq!(locate_in(&dir).map(|c| c.exe().to_path_buf()), Some(armsf));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_build_that_will_not_start_is_passed_over_for_one_that_will() {
+        // Both installed, which is every install: the probe, not the name,
+        // decides.
+        let dir = tmpdir("both");
+        variant(&dir, "bokai", 126);
+        let armsf = variant(&dir, "bokai-armsf", 0);
+        assert_eq!(locate_in(&dir).map(|c| c.exe().to_path_buf()), Some(armsf));
+
+        // And with the hard-float build running, it wins on order.
+        let hf = variant(&dir, "bokai", 0);
+        assert_eq!(locate_in(&dir).map(|c| c.exe().to_path_buf()), Some(hf));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_where_nothing_starts_resolves_to_no_converter() {
+        let dir = tmpdir("none");
+        variant(&dir, "bokai", 1);
+        variant(&dir, "bokai-armsf", 1);
+        assert_eq!(locate_in(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

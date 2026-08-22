@@ -19,7 +19,7 @@
 //!   that entry's prefix is what gets extracted.
 //!
 //! An install is staged beside its destination and has to prove itself — the
-//! engine by `engine::locate_in`, bokai by `convert::locate_at` — before it
+//! engine by `engine::locate_in`, bokai by `convert::locate_in` — before it
 //! replaces what is already there. A download that arrives corrupt, or built
 //! for another ABI, therefore costs nothing.
 //!
@@ -96,7 +96,7 @@ pub const SOURCES: [Source; 2] = [
         // Names the archive's root: `extensions/bokai/bin/bokai`.
         marker: "bin/bokai",
         dest: convert::EXTENSION_DIR,
-        verify: |dir| convert::locate_at(&dir.join("bin/bokai")).is_some(),
+        verify: |dir| convert::locate_in(&dir.join("bin")).is_some(),
     },
 ];
 

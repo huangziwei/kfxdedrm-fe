@@ -1,25 +1,12 @@
-# Attaches the install tree to a published release.
-#
-#   Releases -> Draft a new release -> tag v0.1.0 -> Publish
-#
-# The `release: published` trigger fires this, not a tag push. `--clobber`
-# replaces an asset of the same name, leaving a failed run safe to re-run from
-# the Actions tab.
-#
-# The tag matches [workspace.package] in Cargo.toml. That version compiles in
-# as CARGO_PKG_VERSION and appears in the startup line in
-# /mnt/us/logs/kfxdedrm-fe.log.
-#
-# A runner needs the cross target and luajit, and nothing else: no sysroot, no
-# C toolchain. build.sh is the script a workstation runs. The zips are made here
-# alone -- one for the standalone app, one for the KOReader plugin.
+# Attaches kfxdedrm-fe-<tag>-kindle.zip and kfxdedrm-koplugin-<tag>.zip to a
+# published release. The tag matches [workspace.package] in Cargo.toml.
+# `workflow_dispatch` builds and attaches nothing.
 
 name: Release
 
 on:
     release:
         types: [published]
-    # For a dry run on a branch: builds, and attaches nothing to anything.
     workflow_dispatch:
 
 permissions:
@@ -32,8 +19,7 @@ jobs:
         steps:
             - uses: actions/checkout@v4
 
-            # Section-aware, matching build.sh: compares the
-            # [workspace.package] key and no other `version =`.
+            # `awk` reads the [workspace.package] key and no other `version =`.
             - name: Check the tag against Cargo.toml
               if: github.event_name == 'release'
               env:
@@ -48,9 +34,9 @@ jobs:
                   fi
                   echo "version $crate"
 
-            # build.sh checks for this and stops with one line.
-            - name: Install the cross target
-              run: rustup target add armv7-unknown-linux-musleabihf
+            # build.sh checks for these and stops with one line.
+            - name: Install the cross targets
+              run: rustup target add armv7-unknown-linux-musleabihf armv7-unknown-linux-musleabi
 
             - uses: actions/cache@v4
               with:
@@ -60,13 +46,8 @@ jobs:
                       target
                   key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
-            # The plugin's suite is plain LuaJIT over stubbed KOReader
-            # modules; `unzip` for its archive reader is already on the runner.
-            #
-            # Ahead of `cargo test`: this fetches the two release archives into
-            # koplugin/spec/cache/, which is where native/tests/real_archives.rs
-            # reads them from too. Without them that suite reports what it
-            # skipped and passes.
+            # `run.sh` fetches the two release archives into koplugin/spec/cache/,
+            # which native/tests/real_archives.rs reads in the step below.
             - name: Test the KOReader plugin
               run: |
                   sudo apt-get update -qq
@@ -79,33 +60,35 @@ jobs:
                   cargo clippy --workspace --all-targets -- -D warnings
                   cargo test --workspace
 
+            # One run per float ABI, into the same bin/.
             - name: Build the device tree
-              run: ./build.sh
+              run: |
+                  ./build.sh armhf
+                  ./build.sh armsf
 
             - name: Package
               id: package
               env:
                   VERSION: ${{ github.event.release.tag_name || github.ref_name }}
               run: |
-                  # One asset: the build takes no model. `tr / -` keeps a
-                  # branch like feat/x naming a file.
+                  # `tr / -` keeps a branch like feat/x naming a file.
                   name="kfxdedrm-fe-$(echo "$VERSION" | tr / -)-kindle"
-                  # Zipped from inside device/: the archive opens onto
-                  # extensions/ and documents/, the two that go to /mnt/us.
-                  # assets/ and make-tile.sh build the tile icon and stay out.
+                  # From inside device/, naming the two paths that go to /mnt/us.
                   (cd device && zip -qr "$RUNNER_TEMP/$name.zip" extensions documents -x '*.DS_Store')
-                  # GPLv3 conveys the license with the object code. At the
-                  # archive root, leaving /mnt/us as it was.
+                  # Both `kfxdedrm-fe` and `kfxdedrm-fe-armsf`, or no asset.
+                  for abi in kfxdedrm-fe kfxdedrm-fe-armsf; do
+                    unzip -Z1 "$RUNNER_TEMP/$name.zip" \
+                      | grep -qx "extensions/kfxdedrm-fe/bin/$abi" \
+                      || { echo "error: $abi is not in $name.zip" >&2; exit 1; }
+                  done
+                  # LICENSE at the archive root.
                   zip -q "$RUNNER_TEMP/$name.zip" LICENSE
-                  # From inside RUNNER_TEMP: the sidecar names the zip alone
-                  # and `sha256sum -c` works where the two land.
+                  # From inside RUNNER_TEMP: the sidecar names the zip alone.
                   (cd "$RUNNER_TEMP" && sha256sum "$name.zip" > "$name.zip.sha256")
                   echo "name=$name" >> "$GITHUB_OUTPUT"
 
-                  # The KOReader plugin, the repository's other frontend. Zipped
-                  # from inside koplugin/ so the archive opens onto
-                  # kfxdedrm.koplugin/, which is what goes into
-                  # koreader/plugins/. spec/ is the host suite and stays out.
+                  # From inside koplugin/: the archive opens onto
+                  # kfxdedrm.koplugin/, and spec/ stays out.
                   ko="kfxdedrm-koplugin-$(echo "$VERSION" | tr / -)"
                   (cd koplugin && zip -qr "$RUNNER_TEMP/$ko.zip" kfxdedrm.koplugin -x '*.DS_Store')
                   zip -q "$RUNNER_TEMP/$ko.zip" LICENSE

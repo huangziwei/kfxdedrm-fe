@@ -4,17 +4,41 @@
 #   device/extensions/kfxdedrm-fe/  -> /mnt/us/extensions/kfxdedrm-fe/
 #   device/documents/KFXDeDRM.sh    -> /mnt/us/documents/KFXDeDRM.sh
 #
-# One armv7 musl binary covers the KOA2, Colorsoft and Scribe. The cross link
-# goes through rust-lld; see .cargo/config.toml.
+#   ./build.sh          armhf, bin/kfxdedrm-fe
+#   ./build.sh armsf    soft-float, bin/kfxdedrm-fe-armsf
+#
+# `armhf` targets armv7-unknown-linux-musleabihf and covers the KOA2, Colorsoft
+# and Scribe; `armsf` targets armv7-unknown-linux-musleabi, for the Paperwhite 2
+# generation. Both stage into the same bin/, and bin/launch.sh probes them. The
+# cross link goes through rust-lld; see .cargo/config.toml.
 #
 # The kfxdedrm engine and the bokai converter are separate projects and neither
 # is staged here; the app downloads them from their own GitHub releases.
 set -eu
 
-TARGET="armv7-unknown-linux-musleabihf"
 CRATE="kfxdedrm-fe-native"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-OUT="$ROOT/device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe"
+
+ABI="${1:-armhf}"
+case "$ABI" in
+armhf)
+    TARGET="armv7-unknown-linux-musleabihf"
+    NAME="kfxdedrm-fe"
+    # WANT_FLOAT is the e_flags byte at 0x25: 04 hardfloat, 02 soft-float.
+    WANT_FLOAT="04"
+    ;;
+armsf)
+    TARGET="armv7-unknown-linux-musleabi"
+    NAME="kfxdedrm-fe-armsf"
+    WANT_FLOAT="02"
+    ;;
+*)
+    echo "usage: $0 [armhf|armsf]" >&2
+    exit 1
+    ;;
+esac
+
+OUT="$ROOT/device/extensions/kfxdedrm-fe/bin/$NAME"
 # CARGO_TARGET_DIR carries a shared or cached build directory.
 BUILT="${CARGO_TARGET_DIR:-$ROOT/target}/$TARGET"
 
@@ -36,14 +60,28 @@ VERSION="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0}
 echo "==> building kfxdedrm-fe $VERSION for $TARGET"
 cargo build --release --target "$TARGET" -p "$CRATE" --bin "$CRATE"
 
-# `kfxdedrm-fe` on device: launch.sh runs `pidof kfxdedrm-fe`. The cargo target
-# keeps the longer name, which a host build cannot collide with.
+# `kfxdedrm-fe` on device: launch.sh runs `pidof` over these names. The cargo
+# target keeps the longer name, which a host build cannot collide with.
 mkdir -p "$(dirname "$OUT")"
 cp "$BUILT/release/$CRATE" "$OUT"
 chmod +x "$OUT" 2>/dev/null || true
 chmod +x "$ROOT/device/extensions/kfxdedrm-fe/bin/launch.sh" 2>/dev/null || true
 
-echo "==> staged $(ls -lh "$OUT" | awk '{print $5}') -> device/extensions/kfxdedrm-fe/bin/kfxdedrm-fe"
+# $OUT's own header decides, because the build cannot be tested on the device
+# it targets: e_machine at 0x12 (2800 = EM_ARM) and the e_flags float byte at
+# 0x25, against $WANT_FLOAT.
+MACHINE="$(od -An -tx1 -j18 -N2 "$OUT" | tr -d ' \n')"
+FLOAT="$(od -An -tx1 -j37 -N1 "$OUT" | tr -d ' \n')"
+[ "$MACHINE" = "2800" ] || {
+    echo "error: $OUT is not an ARM ELF (e_machine 0x$MACHINE) — check .cargo/config.toml" >&2
+    exit 1
+}
+[ "$FLOAT" = "$WANT_FLOAT" ] || {
+    echo "error: $OUT is not $ABI (ELF float ABI byte 0x$FLOAT, wanted 0x$WANT_FLOAT)" >&2
+    exit 1
+}
+
+echo "==> staged $(ls -lh "$OUT" | awk '{print $5}') -> device/extensions/kfxdedrm-fe/bin/$NAME"
 file "$OUT" 2>/dev/null || true
 
 # `want` into `file`, replacing whatever `match` finds there.

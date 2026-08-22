@@ -172,6 +172,39 @@ eqlist("the outputs are the steps' own outputs",
 eq("no targets, no outputs", #Convert.outputs(NEITHER, "/o/Book.kfx-zip"), 0)
 
 eq("a missing binary resolves to no converter", Convert.locateAt("/nonexistent/bokai"), nil)
+eq("a missing directory resolves to no converter", Convert.locateIn("/nonexistent/bin"), nil)
+
+eqlist("probe order puts the hard-float build first",
+    Convert.variantPaths("/x/bin"), { "/x/bin/bokai", "/x/bin/bokai-armsf" })
+
+-- A build under ABI whose `--version` exits `code`, standing in for one the
+-- loader accepts (0) or refuses (anything else).
+local ABI = harness.SPEC .. "/cache/abi"
+os.execute("rm -rf '" .. ABI .. "'")
+local function variant(name, code)
+    os.execute("mkdir -p '" .. ABI .. "'")
+    local path = ABI .. "/" .. name
+    local f = assert(io.open(path, "w"))
+    f:write("#!/bin/sh\nexit " .. code .. "\n")
+    f:close()
+    os.execute("chmod +x '" .. path .. "'")
+    return path
+end
+
+-- What is left after unpacking a zip whose hard-float build a device cannot
+-- start: the name `Convert.locate` used to look for is not there.
+local armsf = variant("bokai-armsf", 0)
+eq("a soft-float-only install still resolves", Convert.locateIn(ABI), armsf)
+-- Both installed, which is every install: the probe, not the name, decides.
+variant("bokai", 126)
+eq("a build that will not start is passed over for one that will",
+    Convert.locateIn(ABI), armsf)
+local hf = variant("bokai", 0)
+eq("and with both running, hard-float wins on order", Convert.locateIn(ABI), hf)
+variant("bokai", 1)
+variant("bokai-armsf", 1)
+eq("a directory where nothing starts resolves to no converter", Convert.locateIn(ABI), nil)
+os.execute("rm -rf '" .. ABI .. "'")
 
 for _, kind in ipairs({ Convert.KFX, Convert.EPUB }) do
     check("each kind names itself in three places: " .. kind,

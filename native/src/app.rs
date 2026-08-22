@@ -846,7 +846,7 @@ fn log_addons(engine: Result<&Engine, engine::Missing>, converter: Option<&Conve
     }
     match converter {
         Some(c) => log(format!("converter: {}", c.exe().display())),
-        None => log(format!("converter: none at {}", convert::BIN_PATH)),
+        None => log(format!("converter: none in {}", convert::BIN_DIR)),
     }
 }
 

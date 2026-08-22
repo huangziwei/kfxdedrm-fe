@@ -1,5 +1,5 @@
 --[[--
-`Convert.locate` the bokai converter at `Convert.BIN_PATH`, `Convert.targets`
+`Convert.locate` the bokai converter under `Convert.BIN_DIR`, `Convert.targets`
 for what the settings ask of it, `Convert.convertCommand` to run one step.
 
 bokai is an add-on, not a dependency: `Convert.locate` returning `nil` leaves
@@ -30,8 +30,8 @@ local Convert = {}
 
 --- The add-on extension's root, distinct from this plugin's and the engine's.
 Convert.EXTENSION_DIR = "/mnt/us/extensions/bokai"
---- The one binary the zip installs.
-Convert.BIN_PATH = Convert.EXTENSION_DIR .. "/bin/bokai"
+--- Where the zip installs bokai's ABI builds.
+Convert.BIN_DIR = Convert.EXTENSION_DIR .. "/bin"
 
 --- Shown verbatim by the settings menu: it has no browser and the string is
 --- transcribed by hand.
@@ -39,6 +39,10 @@ Convert.RELEASES_URL = "github.com/huangziwei/sidle/releases"
 --- The asset, `*` standing for the version. bokai versions on its own line and
 --- moves without this plugin moving, so no one version belongs here.
 Convert.RELEASE_ASSET = "bokai-*-kindle.zip"
+
+--- bokai's two builds in `Convert.locateIn` order: hard-float first, soft-float
+--- second. One zip carries both and a device starts one of them.
+Convert.ABI_VARIANTS = { "bokai", "bokai-armsf" }
 
 --- Extensions bokai reads.
 ---
@@ -79,9 +83,31 @@ function Convert.locateAt(exe)
     return exe
 end
 
---- `Convert.locateAt` over `Convert.BIN_PATH`.
+--- `Convert.ABI_VARIANTS` under `dir`, in probe order.
+function Convert.variantPaths(dir)
+    local paths = {}
+    for _, name in ipairs(Convert.ABI_VARIANTS) do
+        table.insert(paths, Engine.join(dir, name))
+    end
+    return paths
+end
+
+--- The first `Convert.variantPaths` entry under `dir` that `Convert.locateAt`
+--- accepts.
+---
+--- Each variant targets a different float ABI, so at most one of them starts
+--- on any one device.
+function Convert.locateIn(dir)
+    for _, exe in ipairs(Convert.variantPaths(dir)) do
+        local found = Convert.locateAt(exe)
+        if found then return found end
+    end
+    return nil
+end
+
+--- `Convert.locateIn` over `Convert.BIN_DIR`.
 function Convert.locate()
-    return Convert.locateAt(Convert.BIN_PATH)
+    return Convert.locateIn(Convert.BIN_DIR)
 end
 
 --- `path`'s extension equals `ext`, case-insensitively: a FAT partition

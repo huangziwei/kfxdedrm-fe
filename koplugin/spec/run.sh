@@ -1,21 +1,15 @@
 #!/bin/sh
-# The plugin's suite, on a host. Needs luajit and, for unpack_spec, unzip.
+# The plugin's suite, on a host. Needs luajit, and unzip for unpack_spec.
 #
 #   koplugin/spec/run.sh              every spec
 #   koplugin/spec/run.sh ports_spec   one of them
-#
-# unpack_spec runs Install.unpack over the two archives the plugin downloads on
-# device. They are fetched into spec/cache/ once and are not in the repository;
-# without a network that one spec is skipped and the rest still run.
 set -eu
 
 SPEC="$(cd "$(dirname "$0")" && pwd)"
 export KFXDEDRM_SPEC="$SPEC"
-# harness.lua is what puts the plugin on package.path, so it has to be findable
-# before it runs. The trailing `;;` keeps luajit's own default path.
+# $SPEC holds harness.lua; the trailing `;;` keeps luajit's default path.
 export LUA_PATH="$SPEC/?.lua;;"
-# Scratch for the whole suite: the two archives below, and the files the specs
-# write while they run.
+# Scratch: the two archives below, and what the specs write.
 CACHE="$SPEC/cache"
 mkdir -p "$CACHE"
 
@@ -24,7 +18,7 @@ command -v luajit >/dev/null 2>&1 || {
     exit 1
 }
 
-# The releases the two archives come from, pinned: the spec asserts their sizes.
+# Pinned releases: unpack_spec asserts the sizes these two carry.
 ENGINE_ZIP="https://github.com/Satsuoni/DeDRM_tools/releases/download/v10.0.30/kfxdedrmmobi.zip"
 BOKAI_ZIP="https://github.com/huangziwei/sidle/releases/download/v0.1.9/bokai-v0.1.2-kindle.zip"
 
@@ -54,5 +48,5 @@ for spec in $specs; do
     luajit "$SPEC/$spec.lua" || status=1
 done
 
-rm -rf "$CACHE/tree" "$CACHE/unpacked"
+rm -rf "$CACHE/tree" "$CACHE/unpacked" "$CACHE/abi"
 exit $status

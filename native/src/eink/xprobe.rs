@@ -1,18 +1,6 @@
-//! `--probe-x`: dump everything that could explain why one panel refreshes and
-//! another does not, in a form two devices can be diffed against each other.
-//!
-//! The renderer assumes the X server turns damage into an eink refresh by
-//! itself, so the caller need not ask for one. Where that does not hold,
-//! drawing is correct and the screen is still stale, and no adjustment to *how*
-//! pixels are uploaded reaches it.
-//!
-//! So the questions here are deliberately about the mechanism, not our usage:
-//! which extensions the server offers (an eink/refresh extension being the thing
-//! we would otherwise never think to call), what the real request limits are,
-//! whether a full-screen upload succeeds and how long the server takes to
-//! acknowledge it, and whether the classic framebuffer refresh paths still exist
-//! underneath. Run it on a device that works and on one that doesn't; the diff is
-//! the answer.
+//! `--probe-x`: dump the X server's extensions, request limits, paint timings
+//! and `/dev/fb0` geometry to [`DUMP_PATH`], in a form two devices diff against
+//! each other.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -26,8 +14,7 @@ use x11rb::protocol::xproto::{
 };
 use x11rb::wrapper::ConnectionExt as _;
 
-/// Where the dump lands — on the user partition, so it is reachable over USB or
-/// MTP without a shell.
+/// Where the dump lands, on the user partition.
 const OUT_PATH: &str = "/mnt/us/kfxdedrm-fe-xprobe.txt";
 
 pub fn run() -> Result<()> {
@@ -75,8 +62,7 @@ fn probe_x(o: &mut String) {
         setup.maximum_request_length,
         setup.maximum_request_length as usize * 4
     );
-    // The negotiated limit. If this equals the line above, BIG-REQUESTS is absent
-    // — which changes how a full-screen paint must be split.
+    // Equal to the line above when BIG-REQUESTS is absent.
     let _ = writeln!(
         o,
         "maximum_request_bytes()={} (BIG-REQUESTS {})",
@@ -121,8 +107,7 @@ fn probe_x(o: &mut String) {
         }
     }
 
-    // The list we most want to compare. A lab126/eink-specific extension here is
-    // the refresh mechanism we would otherwise never call.
+    // A lab126 or eink-specific name here is a refresh mechanism.
     let _ = writeln!(o, "\n[extensions]");
     match conn
         .list_extensions()
@@ -148,13 +133,8 @@ fn probe_x(o: &mut String) {
     probe_paint(&conn, &screen, o);
 }
 
-/// Actually paint, the way the renderer does, and time the server's
-/// acknowledgement.
-///
-/// Reports each band separately so a partial failure is visible as a partial
-/// failure rather than as "the screen looked wrong". The round-trip after each
-/// band is what converts an asynchronous protocol error into a value we can
-/// print next to the band that caused it.
+/// Paint in bands and time each one's round trip. Every band reports its own
+/// byte count, elapsed time and error.
 fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen, o: &mut String) {
     let _ = writeln!(o, "\n[paint test]");
     let xres = screen.width_in_pixels as usize;
@@ -230,8 +210,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     };
     let _ = conn.create_gc(gc, win, &CreateGCAux::new());
 
-    // Alternate black and white bands so a landed band is unmistakable on the
-    // panel by eye, independent of what this file says.
+    // Alternating black and white bands, read off the panel by eye.
     for (label, limit) in [
         ("256KB", 256 * 1024usize),
         ("1MB", 1024 * 1024),
@@ -265,8 +244,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
             }
             y += h;
         }
-        // Round-trip: the server cannot answer until it has processed every
-        // request above, so this both times the work and surfaces their errors.
+        // The reply lands once the server has processed every request above.
         let sync = conn
             .get_input_focus()
             .map_err(|e| e.to_string())
@@ -281,7 +259,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
                 Err(e) => e.to_string(),
             }
         );
-        // Anything the server complained about asynchronously lands here.
+        // Asynchronous protocol errors land here.
         while let Ok(Some(ev)) = conn.poll_for_event() {
             if let x11rb::protocol::Event::Error(e) = ev {
                 let _ = writeln!(o, "  {label}: X error {e:?}");
@@ -295,20 +273,9 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     let _ = conn.flush();
 }
 
-/// Does a burst of small updates cancel a full-screen refresh that is still in
-/// flight?
-///
-/// This is the one thing the rest of the probe cannot answer, because it only
-/// ever paints when nothing else is. `app::run`'s repaint does the opposite: a
-/// full-screen `GC16` — a full flash over 4.6M pixels, on the order of a second —
-/// and then, without waiting, one partial update per cover as it decodes. If
-/// later updates supersede an in-flight one, the fast partials win, the full
-/// refresh is abandoned, and the panel keeps its previous frame everywhere
-/// except the cells that were painted individually.
-///
-/// The test is visual because the outcome lives on the panel, not in the
-/// protocol: X will report success either way. Each phase says what it painted,
-/// and what you should see if the hypothesis is wrong.
+/// Paint full-screen against a burst of small updates, in three phases. X
+/// reports success in each; the panel is the readout, and every phase prints
+/// what it painted.
 #[allow(clippy::too_many_arguments)]
 fn probe_supersession(
     conn: &impl Connection,
@@ -374,8 +341,7 @@ fn probe_supersession(
         "Watch the panel. Each phase pauses 3s so you can see the result."
     );
 
-    // Phase 1 — control. A full paint with nothing competing. Establishes that a
-    // full refresh does land, and how long it takes to become visible.
+    // Phase 1 — a full paint with nothing competing.
     let t = Instant::now();
     paint_full(0x00);
     let _ = conn
@@ -390,8 +356,7 @@ fn probe_supersession(
     );
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // Phase 2 — the real question. Full paint immediately followed by the burst,
-    // the order `app::run` repaints and then fills covers in.
+    // Phase 2 — a full paint immediately followed by the burst.
     let t = Instant::now();
     paint_full(0xFF);
     paint_squares(0x00);
@@ -409,9 +374,7 @@ fn probe_supersession(
     );
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // Phase 3 — same content, but let the full refresh settle before the
-    // partials go out. If phase 2 failed and this succeeds, the cause is
-    // sequencing, not upload size.
+    // Phase 3 — the same content, with a settle ahead of the partials.
     let t = Instant::now();
     paint_full(0xFF);
     let _ = conn
@@ -440,15 +403,8 @@ fn probe_supersession(
     }
 }
 
-/// Does `BackingStore::ALWAYS` stop paints from reaching the panel?
-///
-/// With `Composite` active, a server honouring a backing-store request may keep
-/// a window's pixels in off-screen storage and propagate them on its own
-/// schedule — content present and hit-testable, but not displayed until
-/// something later flushes it. `Framebuffer::open` therefore never asks for it.
-///
-/// Two windows, same paints, one difference. Whichever one misbehaves names the
-/// cause.
+/// Paint the same content into two windows, one with `BackingStore::ALWAYS`
+/// and one without.
 fn probe_backing_store(o: &mut String) {
     let _ = writeln!(o, "\n[backing-store test]");
     let (conn, screen_num) = match x11rb::connect(None) {
@@ -534,8 +490,7 @@ fn probe_backing_store(o: &mut String) {
             );
         };
 
-        // Black, then white with squares — the same shape as the phase that
-        // already passed on a plain window, so any difference is the flag.
+        // Black, then white with squares.
         put(0x00, xres, yres, 0, 0);
         sync(&conn);
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -570,26 +525,9 @@ fn probe_backing_store(o: &mut String) {
     }
 }
 
-/// Paint known squares, then read `/dev/fb0` back and measure what actually
-/// arrived.
-///
-/// "Some squares are missing, some are half" is the observation that matters,
-/// and it cannot be judged reliably by eye or recovered from the protocol — X
-/// reports every one of those uploads as successful. The framebuffer is the
-/// stage *after* X and before the panel, so reading it says which uploads
-/// reached panel memory and, more usefully, the exact geometry of whatever went
-/// wrong. Two candidate causes leave different fingerprints:
-///
-/// - **Stride.** The panel's line stride is 1872 while X calls the screen 1860
-///   wide. If anything writes rows at the wrong pitch, each successive row slips
-///   sideways by 12px and the damage is a shear — coverage falling off gradually
-///   down a square, and content displaced horizontally.
-/// - **Update-region limits.** An eink controller accepts a bounded number of
-///   concurrent update rectangles. Run out and whole squares vanish while
-///   partially-processed ones are cut across a row — coverage that is 100% or 0%
-///   per square, with a clean horizontal edge on the casualties.
-///
-/// The per-square coverage table below distinguishes them.
+/// Paint known squares, read `/dev/fb0` back, and print per-square coverage
+/// with the dark rows of each. A stride error drifts those rows sideways; a
+/// dropped update cuts a square on a clean horizontal edge.
 fn probe_fb_readback(o: &mut String) {
     let _ = writeln!(o, "\n[framebuffer readback]");
 
@@ -672,7 +610,7 @@ fn probe_fb_readback(o: &mut String) {
             .and_then(|c| c.reply().map(|_| ()).map_err(|e| e.to_string()));
     };
 
-    // A white field, then squares on a grid whose positions we can check.
+    // A white field, then squares on a known grid.
     const S: usize = 120;
     let squares: Vec<(usize, usize)> = (0..24)
         .map(|i| {
@@ -717,8 +655,7 @@ fn probe_fb_readback(o: &mut String) {
     sync();
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // Read both pages: the panel is double-buffered (virtual height is 2x), and
-    // which one is live is not exposed, so report whichever matches.
+    // Both pages: virtual height is 2x and the live one is not exposed.
     let page_bytes = fb_w * yres * fb_bpp;
     for page in 0..2usize {
         let Some(buf) = read_fb_page(page * page_bytes, page_bytes) else {
@@ -729,8 +666,7 @@ fn probe_fb_readback(o: &mut String) {
             let idx = y * fb_w * fb_bpp + x * fb_bpp;
             buf.get(idx).is_some_and(|v| *v < 0x40)
         };
-        // Coverage per square, plus which rows of it are dark — a shear shows as
-        // rows drifting, a dropped update as a clean cut.
+        // Coverage per square, plus which of its rows are dark.
         let mut summary = Vec::new();
         for (i, (x, y)) in squares.iter().enumerate() {
             let mut dark_px = 0usize;
@@ -783,9 +719,7 @@ fn read_fb_page(offset: usize, len: usize) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// The pre-X refresh paths. If the X server does not drive the panel here, one
-/// of these is how it is driven instead, and their presence or absence is the
-/// difference worth knowing.
+/// The pre-X refresh paths: which exist, and what each reports.
 fn probe_eink_paths(o: &mut String) {
     let _ = writeln!(o, "\n[eink control paths]");
     for p in [
@@ -809,8 +743,7 @@ fn probe_eink_paths(o: &mut String) {
             }
         );
     }
-    // fb0's own view of the panel, when it is readable — the geometry the eink
-    // controller believes in, which need not match what X reports.
+    // fb0's own geometry, separate from what X reports.
     for p in [
         "/sys/class/graphics/fb0/virtual_size",
         "/sys/class/graphics/fb0/bits_per_pixel",
@@ -827,7 +760,7 @@ fn probe_eink_paths(o: &mut String) {
     }
 }
 
-/// Best-effort `uname -a` etc. so one dump identifies its own device.
+/// Best-effort `uname -a` and friends, identifying the device.
 pub fn device_line() -> String {
     std::fs::read_to_string("/proc/version").unwrap_or_else(|_| "unknown".into())
 }

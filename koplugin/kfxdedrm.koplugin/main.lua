@@ -150,7 +150,7 @@ end
 
 function KfxDeDRM:bokaiMissingText()
     return table.concat({
-        T(_("bokai is not installed.\nNothing runs at %1."), Convert.BIN_PATH),
+        T(_("bokai is not installed.\nNothing in %1 runs here."), Convert.BIN_DIR),
         "",
         T("1.  %1  %2", _("Download"), Convert.RELEASE_ASSET),
         T(_("     from  %1"), Convert.RELEASES_URL),
@@ -628,7 +628,7 @@ function KfxDeDRM:aboutText()
         "",
         engine_line,
         converter and (T(_("bokai: %1"), converter) .. installed_tag("bokai"))
-            or T(_("bokai: not installed at %1"), Convert.BIN_PATH),
+            or T(_("bokai: no build in %1 runs here"), Convert.BIN_DIR),
         "",
         T(_("Decrypted books land in %1."), Config.OUT_DIR),
         T(_("Settings file: %1"), Config.PATH),

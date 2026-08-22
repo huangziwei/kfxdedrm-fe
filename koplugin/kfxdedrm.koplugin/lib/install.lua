@@ -65,7 +65,7 @@ Install.SOURCES = {
         marker = "bin/bokai",
         dest = Convert.EXTENSION_DIR,
         verify = function(dir)
-            return Convert.locateAt(dir .. "/bin/bokai") ~= nil
+            return Convert.locateIn(dir .. "/bin") ~= nil
         end,
     },
 }
