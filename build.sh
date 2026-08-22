@@ -111,9 +111,10 @@ cat <<'EOF'
     device/documents/KFXDeDRM.sh    ->  /mnt/us/documents/KFXDeDRM.sh
 
 Neither the kfxdedrm engine nor the optional bokai converter is staged here.
-Settings -> Add-ons fetches both over Wi-Fi, into /mnt/us/extensions/kfxdedrm/
-and /mnt/us/extensions/bokai/, and the first screen offers the same when the
-engine is missing. Either can still be unzipped there by hand.
+Settings -> Updates -> "kfxdedrm + bokai" fetches both over Wi-Fi, into
+/mnt/us/extensions/kfxdedrm/ and /mnt/us/extensions/bokai/, and the first
+screen offers the same when the engine is missing. Either can still be
+unzipped there by hand.
 
 Without bokai the two "Also write" settings do nothing and the app decrypts and
 stops there. Decrypted books land in /mnt/us/dedrm/.

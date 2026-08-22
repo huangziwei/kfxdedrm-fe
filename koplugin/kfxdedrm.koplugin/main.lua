@@ -142,7 +142,7 @@ function KfxDeDRM:engineMissingText(reason)
         "",
         T(_("2.  Unzip it onto the Kindle as  %1/"), Engine.EXTENSION_DIR),
         "",
-        _("Or let this plugin fetch it: “Download or update kfxdedrm and bokai”."),
+        _("Or let this plugin fetch it: “Install or update the decryption tools”."),
     }, "\n")
 end
 
@@ -155,7 +155,7 @@ function KfxDeDRM:bokaiMissingText()
         "",
         T(_("2.  Unzip it onto the Kindle as  %1/"), Convert.EXTENSION_DIR),
         "",
-        _("Or let this plugin fetch it: “Download or update kfxdedrm and bokai”."),
+        _("Or let this plugin fetch it: “Install or update the decryption tools”."),
     }, "\n")
 end
 
@@ -232,11 +232,11 @@ end
 
 function KfxDeDRM:emptyText()
     if not Config.listsAnything(self.cfg) then
-        return _("Nothing is being listed.\nPick a folder and a format in the plugin's menu.")
+        return _("Nothing is being listed.\nPick one under “Folders to scan” and one under “Formats to look for”.")
     elseif self.cfg.show_done then
         return T(_("No DRM'd books found.\nLooked in %1."), self:foldersSummary())
     end
-    return _("Nothing left to decrypt.\nFinished books are hidden — turn that off in the plugin's menu.")
+    return _("Nothing left to decrypt.\nBooks already decrypted are hidden — “Show books already decrypted” lists them again.")
 end
 
 local function menu_items_for(books)
@@ -625,7 +625,7 @@ function KfxDeDRM:alsoWriteItems()
     local items = {}
     if not self:getConverter() then
         items[1] = {
-            text = _("bokai is not installed — where to get it"),
+            text = _("Needs bokai — tap for how to install it"),
             keep_menu_open = true,
             callback = function()
                 UIManager:show(InfoMessage:new{ text = self:bokaiMissingText() })
@@ -634,7 +634,7 @@ function KfxDeDRM:alsoWriteItems()
         }
     end
     items[#items + 1] = {
-        text = _("KFX — the .kfx-zip bundle as one container"),
+        text = _("KFX — the .kfx-zip packed into one file"),
         enabled_func = function() return self:getConverter() ~= nil end,
         checked_func = function() return self.cfg.pack_kfx end,
         callback = function()
@@ -689,26 +689,69 @@ function KfxDeDRM:aboutText()
     }, "\n")
 end
 
+--- `names` as one line, or `none` for an empty list.
+---
+--- A menu row here stands on its own: nothing above it says what it is for,
+--- and nothing beside it says where it stands. What the standalone app puts in
+--- a chip goes into the label.
+local function one_line(names)
+    if #names == 0 then return _("none") end
+    return table.concat(names, ", ")
+end
+
+--- `cfg.scan_dirs` for a menu row: the folder's own name at one, a count above
+--- that. `KfxDeDRM:foldersSummary` is the same thing at the width of a dialog.
+function KfxDeDRM:foldersLabel()
+    local dirs = self.cfg.scan_dirs
+    if #dirs == 0 then return _("none") end
+    if #dirs == 1 then return Scan.folderLabel(dirs[1]) end
+    return self:foldersSummary()
+end
+
+--- The formats a book is listed for.
+function KfxDeDRM:formatsLabel()
+    local names = {}
+    if self.cfg.types_kfx then names[#names + 1] = "KFX" end
+    if self.cfg.types_mobi then names[#names + 1] = "MOBI" end
+    return one_line(names)
+end
+
+--- The extra formats written beside a decrypted book.
+---
+--- The switches themselves, not `KfxDeDRM:targets`: that probes for bokai, and
+--- this is read every time the menu is drawn. The submenu is where a missing
+--- bokai is reported.
+function KfxDeDRM:alsoSaveLabel()
+    local names = {}
+    if self.cfg.pack_kfx then names[#names + 1] = "KFX" end
+    if self.cfg.convert_epub then names[#names + 1] = "EPUB" end
+    return one_line(names)
+end
+
 function KfxDeDRM:addToMainMenu(menu_items)
     menu_items.kfxdedrm = {
         text = self.fullname,
         sorting_hint = "more_tools",
         sub_item_table = {
             {
-                text = _("Books…"),
+                text = _("Pick a book to decrypt"),
                 callback = function() self:showBooks() end,
             },
             {
-                text = _("Decrypt everything listed"),
+                text = _("Decrypt every book found"),
                 callback = function() self:decryptEverything() end,
                 separator = true,
             },
             {
-                text = _("Folders to scan"),
+                text_func = function()
+                    return T(_("Folders to scan: %1"), self:foldersLabel())
+                end,
                 sub_item_table_func = function() return self:folderItems() end,
             },
             {
-                text = _("Formats to list"),
+                text_func = function()
+                    return T(_("Formats to look for: %1"), self:formatsLabel())
+                end,
                 sub_item_table = {
                     {
                         text = _("KFX"),
@@ -729,11 +772,13 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 },
             },
             {
-                text = _("Also write"),
+                text_func = function()
+                    return T(_("Also save as: %1"), self:alsoSaveLabel())
+                end,
                 sub_item_table_func = function() return self:alsoWriteItems() end,
             },
             {
-                text = _("Keep finished books listed"),
+                text = _("Show books already decrypted"),
                 checked_func = function() return self.cfg.show_done end,
                 callback = function()
                     self.cfg.show_done = not self.cfg.show_done
@@ -742,7 +787,7 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 separator = true,
             },
             {
-                text = _("Download or update kfxdedrm and bokai"),
+                text = _("Install or update the decryption tools"),
                 keep_menu_open = true,
                 callback = function() self:fetchDependencies() end,
             },
@@ -750,20 +795,14 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 text = _("Update this plugin"),
                 keep_menu_open = true,
                 callback = function() self:updateSelf() end,
-                separator = true,
             },
             {
-                text = _("Look for the engine again"),
+                -- Probes first: an add-on unzipped by hand since KOReader
+                -- started is found here.
+                text = _("What's installed and where"),
                 keep_menu_open = true,
                 callback = function()
                     self:reprobe()
-                    UIManager:show(InfoMessage:new{ text = self:aboutText() })
-                end,
-            },
-            {
-                text = _("Where things are"),
-                keep_menu_open = true,
-                callback = function()
                     UIManager:show(InfoMessage:new{ text = self:aboutText() })
                 end,
             },
