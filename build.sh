@@ -1,19 +1,7 @@
 #!/bin/sh
-# Cross-compile for the Kindle and stage device/ for a USB copy.
-#
-#   device/extensions/kfxdedrm-fe/  -> /mnt/us/extensions/kfxdedrm-fe/
-#   device/documents/KFXDeDRM.sh    -> /mnt/us/documents/KFXDeDRM.sh
-#
-#   ./build.sh          armhf, bin/kfxdedrm-fe
-#   ./build.sh armsf    soft-float, bin/kfxdedrm-fe-armsf
-#
-# `armhf` targets armv7-unknown-linux-musleabihf and covers the KOA2, Colorsoft
-# and Scribe; `armsf` targets armv7-unknown-linux-musleabi, for the Paperwhite 2
-# generation. Both stage into the same bin/, and bin/launch.sh probes them. The
-# cross link goes through rust-lld; see .cargo/config.toml.
-#
-# The kfxdedrm engine and the bokai converter are separate projects and neither
-# is staged here; the app downloads them from their own GitHub releases.
+# Cross-compile and stage device/ for a USB copy to /mnt/us.
+#   ./build.sh          armv7-unknown-linux-musleabihf, bin/kfxdedrm-fe
+#   ./build.sh armsf    armv7-unknown-linux-musleabi, bin/kfxdedrm-fe-armsf
 set -eu
 
 CRATE="kfxdedrm-fe-native"
@@ -49,9 +37,7 @@ if ! rustup target list --installed | grep -qx "$TARGET"; then
     exit 1
 fi
 
-# [workspace.package] is the one place the version is edited. The binary reads
-# it through CARGO_PKG_VERSION; the two files below cannot read Cargo.toml, so
-# `stamp` writes it into them.
+# [workspace.package] is the one place the version is edited.
 VERSION="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0}
                 f && /^version *=/{gsub(/[" ]/,""); sub(/^version=/,""); print; exit}' \
     "$ROOT/Cargo.toml")"
@@ -60,16 +46,13 @@ VERSION="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0}
 echo "==> building kfxdedrm-fe $VERSION for $TARGET"
 cargo build --release --target "$TARGET" -p "$CRATE" --bin "$CRATE"
 
-# `kfxdedrm-fe` on device: launch.sh runs `pidof` over these names. The cargo
-# target keeps the longer name, which a host build cannot collide with.
+# launch.sh runs `pidof` over these names.
 mkdir -p "$(dirname "$OUT")"
 cp "$BUILT/release/$CRATE" "$OUT"
 chmod +x "$OUT" 2>/dev/null || true
 chmod +x "$ROOT/device/extensions/kfxdedrm-fe/bin/launch.sh" 2>/dev/null || true
 
-# $OUT's own header decides, because the build cannot be tested on the device
-# it targets: e_machine at 0x12 (2800 = EM_ARM) and the e_flags float byte at
-# 0x25, against $WANT_FLOAT.
+# e_machine at 0x12 (2800 = EM_ARM) and the e_flags float byte at 0x25.
 MACHINE="$(od -An -tx1 -j18 -N2 "$OUT" | tr -d ' \n')"
 FLOAT="$(od -An -tx1 -j37 -N1 "$OUT" | tr -d ' \n')"
 [ "$MACHINE" = "2800" ] || {
@@ -85,11 +68,6 @@ echo "==> staged $(ls -lh "$OUT" | awk '{print $5}') -> device/extensions/kfxded
 file "$OUT" 2>/dev/null || true
 
 # `want` into `file`, replacing whatever `match` finds there.
-#
-# Neither file can read Cargo.toml, and a copy of the version that has to be
-# remembered is a copy that gets forgotten, so this writes them both. A file
-# that already carries the version is left alone: building a clean tree leaves
-# it clean.
 stamp() {
     file="$1"
     match="$2"
@@ -111,14 +89,11 @@ stamp() {
 stamp "$ROOT/device/extensions/kfxdedrm-fe/config.xml" \
     '<version>[^<]*</version>' "<version>$VERSION</version>"
 
-# KOReader reads nothing from the plugin's; its own `Where things are` screen
-# is what names the build a bug report came from.
+# _meta.lua names this build in KOReader's own screen.
 stamp "$ROOT/koplugin/kfxdedrm.koplugin/_meta.lua" \
     '^\( *\)version = "[^"]*",' "\1version = \"$VERSION\","
 
-# The `# Icon:` line is a ~23KB base64 blob from device/make-tile.sh, which
-# needs rsvg-convert and pngquant. Rewriting it per build churns that line into
-# every diff, and TILE ships with the icon embedded. Checked, not regenerated.
+# The `# Icon:` line comes from device/make-tile.sh. Checked, not regenerated.
 TILE="$ROOT/device/documents/KFXDeDRM.sh"
 COVER="$ROOT/device/assets/cover.png"
 if ! grep -q '^# Icon: data:image/png;base64,' "$TILE" 2>/dev/null; then

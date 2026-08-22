@@ -1,32 +1,6 @@
-//! Fetching the kfxdedrm engine and the bokai add-on from their own GitHub
-//! releases.
-//!
-//! Neither ships with this app — one is someone else's project and both are
-//! several megabytes of ARM binary — so what is offered here is the download
-//! the first screen otherwise asks for by hand.
-//!
-//! Two things about those repositories decide the shape of this:
-//!
-//! - **`/releases/latest` is the wrong endpoint.** Every DeDRM_tools release
-//!   that carries `kfxdedrmmobi.zip` is marked a prerelease, which that
-//!   endpoint skips, and a sidle tag is published before its assets finish
-//!   uploading. [`pick_release`] walks the release list instead and takes the
-//!   newest one that actually holds a matching asset.
-//! - **The two zips have different roots** — `kfxdedrm/…` against
-//!   `extensions/bokai/…` — and neither matches the folder it installs into.
-//!   So no path inside an archive is hardcoded: `archive::prefix_for` finds
-//!   the entry ending in the source's [`Source::marker`] and everything under
-//!   that entry's prefix is what gets extracted.
-//!
-//! An install is staged beside its destination and has to prove itself — the
-//! engine by `engine::locate_in`, bokai by `convert::locate_in` — before it
-//! replaces what is already there. A download that arrives corrupt, or built
-//! for another ABI, therefore costs nothing.
-//!
-//! This is a port of the KOReader plugin's `lib/install.lua`. The two drive
-//! the same repositories with the same asset patterns and the same markers,
-//! and [`record`] is one file they share, so neither fetches what the other
-//! already has; behaviour that differs between them is a bug in one of the two.
+//! [`install_all`] fetches every [`SOURCES`] entry from GitHub into its own
+//! extension folder and records what landed in [`record`]. A port of
+//! `koplugin/kfxdedrm.koplugin/lib/install.lua`.
 
 pub mod archive;
 pub mod http;
@@ -42,8 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::log;
 use crate::{convert, engine};
 
-/// Releases to look through, newest first. Well past the depth at which the
-/// engine last shipped its asset.
+/// Releases to look through, newest first.
 const RELEASES_PER_PAGE: u32 = 30;
 
 /// What can be installed. [`Source::verify`] is what a staged copy has to pass.
@@ -55,19 +28,17 @@ pub struct Source {
     pub repo: &'static str,
     /// Which asset of a release this installs, by filename.
     pub asset: fn(&str) -> bool,
-    /// The releases page, and the asset named the way someone would look for
-    /// it there — `*` standing for a version the filename carries.
-    ///
-    /// Neither is used to fetch anything: they are what [`by_hand`] logs when
-    /// fetching fails, and the only thing anywhere that says how to install
-    /// this without a network.
+    /// What [`record`] stores, from the asset filename and the release tag.
+    pub version: fn(&str, &str) -> String,
+    /// The releases page and the asset name [`by_hand`] logs, `*` standing for
+    /// a version the filename carries.
     pub releases: &'static str,
     pub asset_name: &'static str,
     /// An entry that names the archive's own root — see `archive::prefix_for`.
     pub marker: &'static str,
     /// Where the unpacked copy lands.
     pub dest: &'static str,
-    /// Does the copy staged at this folder actually run on this device?
+    /// Whether the copy staged at this folder runs on this device.
     pub verify: fn(&Path) -> bool,
 }
 
@@ -78,6 +49,8 @@ pub const SOURCES: [Source; 2] = [
         repo: "Satsuoni/DeDRM_tools",
         // `kfxdedrm.zip` and `kfxdedrm_kual.zip` are older, KFX-only assets.
         asset: |name| name == engine::RELEASE_ASSET,
+        // `kfxdedrmmobi.zip` carries no version; the tag is the whole of it.
+        version: |_asset, tag| tag.to_string(),
         releases: engine::RELEASES_URL,
         asset_name: engine::RELEASE_ASSET,
         // Names the archive's root: `kfxdedrm/bin/kfxdedrmhf_c11`.
@@ -89,8 +62,10 @@ pub const SOURCES: [Source; 2] = [
         key: "bokai",
         name: "bokai",
         repo: "huangziwei/sidle",
-        // The version rides the filename, so no one name belongs here.
+        // The version rides the filename.
         asset: |name| name.starts_with("bokai-") && name.ends_with("-kindle.zip"),
+        // A sidle tag names sidle. bokai's own version rides the filename.
+        version: |asset, tag| bokai_version(asset).unwrap_or(tag).to_string(),
         releases: convert::RELEASES_URL,
         asset_name: convert::RELEASE_ASSET,
         // Names the archive's root: `extensions/bokai/bin/bokai`.
@@ -104,15 +79,21 @@ pub fn source(key: &str) -> Option<&'static Source> {
     SOURCES.iter().find(|s| s.key == key)
 }
 
-/// The release a [`Source`] would install.
+/// The version in `bokai-<version>-kindle.zip`.
+fn bokai_version(asset: &str) -> Option<&str> {
+    let version = asset.strip_prefix("bokai-")?.strip_suffix("-kindle.zip")?;
+    (!version.is_empty()).then_some(version)
+}
+
+/// The release a [`Source`] installs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
-    pub tag: String,
+    /// [`Source::version`] of the asset below.
+    pub version: String,
     /// The asset to download.
     pub url: String,
     pub name: String,
-    /// A `.sha256` sidecar, when the release publishes one. bokai does;
-    /// DeDRM_tools does not.
+    /// A `.sha256` sidecar, when the release publishes one.
     pub sha: Option<String>,
 }
 
@@ -122,8 +103,7 @@ pub struct ApiRelease {
     pub tag_name: String,
     #[serde(default)]
     pub draft: bool,
-    /// Not read by [`pick_release`]: it is why `/releases/latest` is useless
-    /// here, which the tests assert and rely on.
+    /// Read by the tests, not by [`pick_release`].
     #[serde(default)]
     pub prerelease: bool,
     #[serde(default)]
@@ -169,7 +149,7 @@ pub fn pick_release(releases: &[ApiRelease], source: &Source) -> Option<Release>
         };
         let sidecar = format!("{}.sha256", found.name);
         return Some(Release {
-            tag: release.tag_name.clone(),
+            version: (source.version)(&found.name, &release.tag_name),
             url: found.browser_download_url.clone(),
             name: found.name.clone(),
             sha: release
@@ -227,9 +207,8 @@ fn transferred(got: u64, total: Option<u64>) -> String {
 
 /// Fetch or update every [`SOURCES`] entry, one summary line each.
 ///
-/// Blocking, and meant for a worker thread: `cancel` is what the panel's
-/// Cancel button sets, and it is read between chunks of a download and between
-/// one add-on and the next.
+/// Blocking. `cancel` is read between chunks of a download and between one
+/// [`SOURCES`] entry and the next.
 pub fn install_all(record_path: &Path, say: &dyn Fn(Step), cancel: &AtomicBool) -> Vec<String> {
     if crate::net::is_offline() {
         return vec!["No route off this Kindle.".into(), "Turn Wi-Fi on.".into()];
@@ -262,7 +241,7 @@ pub fn install_all(record_path: &Path, say: &dyn Fn(Step), cancel: &AtomicBool) 
     lines
 }
 
-/// One add-on: what it is now, or why it is not. The line is the banner's.
+/// One [`SOURCES`] entry, as a line for the banner.
 fn install_one(
     client: &http::Client,
     source: &Source,
@@ -278,22 +257,21 @@ fn install_one(
         }
     };
 
-    // The record alone is not enough: it names a release that was installed,
-    // not one that still runs here.
-    if record.get(source.key) == Some(release.tag.as_str())
+    // `record` names what was installed; `verify` names what runs here.
+    if record.get(source.key) == Some(release.version.as_str())
         && (source.verify)(Path::new(source.dest))
     {
-        return format!("{}: already at {}", source.name, release.tag);
+        return format!("{}: already at {}", source.name, release.version);
     }
 
     match fetch(client, source, &release, step, cancel) {
         Ok(()) => {
-            record.set(source.key, &release.tag);
+            record.set(source.key, &release.version);
             log(format!(
                 "installed {} {} into {}",
-                source.name, release.tag, source.dest
+                source.name, release.version, source.dest
             ));
-            format!("{}: installed {}", source.name, release.tag)
+            format!("{}: installed {}", source.name, release.version)
         }
         Err(why) => {
             by_hand(source);
@@ -302,8 +280,7 @@ fn install_one(
     }
 }
 
-/// Where to get `source` when this could not. The banner has no room for a URL
-/// and no browser to open one, so the log is where it goes.
+/// Where to get `source` by hand, into the log.
 fn by_hand(source: &Source) {
     log(format!(
         "{}: by hand, unzip {} from {} into {}",
@@ -311,7 +288,7 @@ fn by_hand(source: &Source) {
     ));
 }
 
-/// The release `source` would install.
+/// The release `source` installs.
 pub fn available(client: &http::Client, source: &Source) -> Result<Release, &'static str> {
     let url = format!(
         "https://api.github.com/repos/{}/releases?per_page={RELEASES_PER_PAGE}",
@@ -332,10 +309,8 @@ pub fn available(client: &http::Client, source: &Source) -> Result<Release, &'st
     pick_release(&releases, source).ok_or("no release has it")
 }
 
-/// Download, unpack, prove and swap in.
-///
-/// Nothing already in place is touched until a staged copy has run on this
-/// device, so a failure anywhere here leaves the previous install working.
+/// Download, unpack, prove and swap in. `source.dest` is untouched until a
+/// staged copy has run on this device.
 fn fetch(
     client: &http::Client,
     source: &Source,
@@ -350,8 +325,7 @@ fn fetch(
     let _ = fs::remove_file(&zip);
 
     step("Downloading…".into());
-    // The panel repaints on every step it is handed and each one is a full
-    // banner; a percentage that moves by 2 is often enough to look live.
+    // `last` throttles `progress` to one `step` per 2%.
     let last = std::cell::Cell::new(u64::MAX);
     let progress = |got: u64, total: Option<u64>| {
         let mark = match total {
@@ -392,8 +366,7 @@ fn fetch(
         }
     }
 
-    // The archive may or may not carry Unix modes depending on what wrote it,
-    // so nothing under bin/ is assumed to have come out executable.
+    // The archive's Unix modes vary with what wrote it.
     mark_executable(&staging.join("bin"));
 
     step("Checking it runs here…".into());
@@ -416,8 +389,7 @@ fn swap_in(staging: &Path, dest: &Path) -> Result<(), String> {
         return Err("cannot move the old copy aside".into());
     }
     if !move_dir(staging, dest) {
-        // Put back whatever was working before failing. Failing that too
-        // leaves the old copy at `.old`, which the log has to say.
+        // `previous` back into place; the log names it on failure.
         if had_one && !move_dir(&previous, dest) {
             log(format!("the previous copy is at {}", previous.display()));
         }
@@ -430,8 +402,7 @@ fn swap_in(staging: &Path, dest: &Path) -> Result<(), String> {
 
 /// `from` to `to`, through `mv` when `rename` will not have it.
 ///
-/// The two paths share a parent, which is the case `rename` handles on the
-/// FAT partition these live on. `mv` is the fallback for the case it does not.
+/// `from` and `to` share a parent, which `rename` handles on FAT.
 fn move_dir(from: &Path, to: &Path) -> bool {
     if fs::rename(from, to).is_ok() {
         return true;
@@ -445,9 +416,7 @@ fn move_dir(from: &Path, to: &Path) -> bool {
 
 /// The downloaded file against the digest the release publishes for it.
 ///
-/// A sidecar that cannot be read is not a mismatch: DeDRM_tools publishes none
-/// at all, and the gate that actually holds either way is that the staged copy
-/// has to run.
+/// An unreadable sidecar is not a mismatch.
 fn check_digest(
     client: &http::Client,
     sidecar: &str,
@@ -497,8 +466,7 @@ fn digest_of(path: &Path) -> Option<String> {
     )
 }
 
-/// Every file directly under `dir`, executable. Best effort: the partition is
-/// FAT and its modes come from the mount as often as from the file.
+/// Every file directly under `dir`, executable. Best effort on FAT.
 fn mark_executable(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -548,7 +516,7 @@ mod tests {
     #[test]
     fn the_engine_comes_off_the_newest_release_carrying_its_asset() {
         let picked = pick_release(&dedrm(), engine()).unwrap();
-        assert_eq!(picked.tag, "v10.0.30");
+        assert_eq!(picked.version, "v10.0.30");
         assert_eq!(picked.name, engine::RELEASE_ASSET);
         assert!(picked.url.contains(engine::RELEASE_ASSET));
         // DeDRM_tools publishes no checksum beside it.
@@ -576,15 +544,44 @@ mod tests {
         let list = sidle();
         let picked = pick_release(&list, bokai()).unwrap();
         // Whichever release is newest at the time, by the asset it holds.
-        let (tag, name) = list
+        let name = list
             .iter()
-            .flat_map(|r| r.assets.iter().map(move |a| (&r.tag_name, &a.name)))
-            .find(|(_, name)| (bokai().asset)(name))
+            .flat_map(|r| r.assets.iter().map(|a| &a.name))
+            .find(|name| (bokai().asset)(name))
             .unwrap();
-        assert_eq!(&picked.tag, tag);
         assert_eq!(&picked.name, name);
         // And that one does publish a checksum.
         assert!(picked.sha.is_some_and(|s| s.ends_with(".sha256")));
+    }
+
+    #[test]
+    fn bokai_records_its_own_version_off_a_sidle_tag() {
+        // `v0.1.9` is sidle's number; the asset under it is bokai v0.1.2.
+        let bundled: Vec<ApiRelease> = sidle()
+            .into_iter()
+            .filter(|r| !r.tag_name.starts_with("bokai-"))
+            .collect();
+        let picked = pick_release(&bundled, bokai()).unwrap();
+        assert_eq!(picked.name, "bokai-v0.1.2-kindle.zip");
+        assert_eq!(picked.version, "v0.1.2");
+
+        // A release tagged for bokai alone agrees with its own asset.
+        let alone = pick_release(&sidle(), bokai()).unwrap();
+        assert_eq!(alone.name, "bokai-v0.1.3-kindle.zip");
+        assert_eq!(alone.version, "v0.1.3");
+    }
+
+    #[test]
+    fn an_asset_carrying_no_version_falls_back_to_the_tag() {
+        assert_eq!(bokai_version("bokai-v0.1.2-kindle.zip"), Some("v0.1.2"));
+        assert_eq!(bokai_version("bokai--kindle.zip"), None);
+        assert_eq!(bokai_version("kfxdedrmmobi.zip"), None);
+        assert_eq!((bokai().version)("kfxdedrmmobi.zip", "v1.2.3"), "v1.2.3");
+        // The engine's asset never carries one.
+        assert_eq!(
+            (engine().version)(engine::RELEASE_ASSET, "v10.0.30"),
+            "v10.0.30"
+        );
     }
 
     #[test]
@@ -629,14 +626,12 @@ mod tests {
 
     #[test]
     fn each_source_names_the_page_its_release_comes_from() {
-        // One spelling of each: the two modules own these strings and `ui`
-        // draws the engine's, so a second copy here could drift from both.
+        // `engine` and `convert` own these strings.
         assert_eq!(engine().releases, engine::RELEASES_URL);
         assert_eq!(engine().asset_name, engine::RELEASE_ASSET);
         assert_eq!(bokai().releases, convert::RELEASES_URL);
         assert_eq!(bokai().asset_name, convert::RELEASE_ASSET);
-        // The name a person would look for is the one the matcher accepts,
-        // give or take the version bokai's carries.
+        // `asset_name` and `asset` agree, give or take bokai's version.
         assert!((engine().asset)(engine().asset_name));
         assert!(bokai().asset_name.contains('*'));
     }

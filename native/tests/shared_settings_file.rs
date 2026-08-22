@@ -1,14 +1,6 @@
-//! The two files both frontends write, against the fixtures the KOReader
-//! plugin's own suite reads.
-//!
-//! `koplugin/` writes the settings file and the install record too, at the
-//! same two paths, so that one device carries one set of folders and switches
-//! and one record of what is installed whichever frontend is running. The
-//! renderers have to agree byte for byte: a difference means each frontend
-//! rewrites the other's file every time it saves.
-//!
-//! These fixtures are the contract. Changing a format means changing them,
-//! which fails `koplugin/spec` until its renderer is changed to match.
+//! The settings file and the install record, against the fixtures
+//! `koplugin/spec` reads. Both frontends write both paths, and the renderers
+//! agree byte for byte.
 
 use std::path::{Path, PathBuf};
 
@@ -57,7 +49,7 @@ fn the_fixtures_read_back_as_the_settings_that_wrote_them() {
 #[test]
 fn the_install_record_is_what_the_plugin_expects() {
     let mut record = Record::default();
-    record.set("bokai", "bokai-v0.1.3");
+    record.set("bokai", "v0.1.3");
     record.set("engine", "v10.0.30");
     assert_eq!(record.render(), fixture("installs.txt"));
 }
@@ -66,5 +58,5 @@ fn the_install_record_is_what_the_plugin_expects() {
 fn the_record_fixture_reads_back_as_the_releases_that_wrote_it() {
     let record = Record::parse(&fixture("installs.txt"));
     assert_eq!(record.get("engine"), Some("v10.0.30"));
-    assert_eq!(record.get("bokai"), Some("bokai-v0.1.3"));
+    assert_eq!(record.get("bokai"), Some("v0.1.3"));
 }

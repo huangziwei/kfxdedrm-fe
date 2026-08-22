@@ -1,29 +1,18 @@
-//! Which release of each add-on is installed.
-//!
-//! Shared with the KOReader plugin, which reads and writes the same file in
-//! the same format, so one device carries one record and neither frontend
-//! downloads what the other already fetched.
-//!
-//! Its own file rather than a couple of keys in `config::Config`'s: that
-//! format is fixed on both sides and a key one frontend does not know is a key
-//! its next save drops. This one has no such constraint.
-//!
-//! Nothing is inferred from it. Neither binary reports a version, so a copy
-//! installed by hand reads as unknown here, and [`crate::install::install_one`]
-//! confirms a matching tag by running the binary before it believes it.
+//! Which release of each add-on is installed, as `key = value` lines at
+//! [`PATH`]. `koplugin/kfxdedrm.koplugin/lib/install.lua` renders the same
+//! bytes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Beside `config.txt`, under this app's own extension folder. The plugin's
-/// `lib/install.lua` names the same path.
+/// Beside `config.txt`, under this app's extension folder.
 pub const PATH: &str = "/mnt/us/extensions/kfxdedrm-fe/installs.txt";
 
 pub fn path() -> PathBuf {
     PathBuf::from(PATH)
 }
 
-/// `key = tag` lines, one per `crate::install::Source`.
+/// `key = value` lines, one per `crate::install::Source`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Record {
     tags: BTreeMap<String, String>,
@@ -96,13 +85,13 @@ mod tests {
     #[test]
     fn the_format_is_the_one_both_frontends_agree_on() {
         let mut r = Record::default();
-        r.set("bokai", "bokai-v0.1.3");
+        r.set("bokai", "v0.1.3");
         r.set("engine", "v10.0.30");
         // Sorted by key, one `key = value` line each, under a comment header:
         // `koplugin/spec/fixtures/installs.txt` is the same bytes.
         let rendered = r.render();
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines[lines.len() - 2], "bokai = bokai-v0.1.3");
+        assert_eq!(lines[lines.len() - 2], "bokai = v0.1.3");
         assert_eq!(lines[lines.len() - 1], "engine = v10.0.30");
         assert!(lines[..lines.len() - 2].iter().all(|l| l.starts_with('#')));
     }
@@ -111,7 +100,7 @@ mod tests {
     fn round_trips_through_the_file_format() {
         let mut r = Record::default();
         r.set("engine", "v10.0.30");
-        r.set("bokai", "bokai-v0.1.3");
+        r.set("bokai", "v0.1.3");
         assert_eq!(Record::parse(&r.render()), r);
         assert_eq!(r.get("engine"), Some("v10.0.30"));
         assert_eq!(r.get("nothing"), None);
@@ -137,8 +126,7 @@ mod tests {
              = orphan\n",
         );
         assert_eq!(r.get("engine"), Some("v10.0.30"));
-        // An empty value is no record, which is what makes the next check
-        // download that add-on again.
+        // An empty value is no record.
         assert_eq!(r.get("bokai"), None);
         assert_eq!(r, Record::parse("engine=v10.0.30"));
     }

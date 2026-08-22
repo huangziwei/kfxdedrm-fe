@@ -1,13 +1,6 @@
-//! [`run`]: a paginated grid of `[crate::scan::Book]`, with [`crate::ui::configmenu`]
-//! as a blocking overlay. A held cover runs [`decrypt_one`]; the toolbar runs
-//! [`decrypt_all`].
-//!
-//! Neither add-on is part of this install. [`engine::locate`] failing opens on
-//! [`crate::ui::setup`], which offers [`install_addons`] and then opens the
-//! grid either way; [`convert::locate`] failing costs nothing at all, since
-//! `convert::Targets` reads as empty and [`convert_outputs`] plans no step.
-//!
-//! No path under `[config::DOCUMENTS_DIR]` is written, moved or removed.
+//! [`run`]: a paginated grid of `[crate::scan::Book]`, with
+//! [`crate::ui::configmenu`] as a blocking overlay. A held cover runs
+//! [`decrypt_one`]; the toolbar runs [`decrypt_all`].
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -201,8 +194,7 @@ fn draw_empty(fb: &mut Framebuffer, renderer: &mut TextRenderer, cfg: &Config) {
     }
 }
 
-/// `Config::scan_dirs` as one line: the folder itself while there is one,
-/// a count once naming them all would run off the panel.
+/// `Config::scan_dirs` as one line: the folder at one, a count above that.
 fn folders_summary(cfg: &Config) -> String {
     match cfg.scan_dirs.as_slice() {
         [] => "no folder".to_string(),
@@ -317,8 +309,7 @@ enum StepBanner<'a> {
     One(&'a str),
     /// [`decrypt_all`]: the batch bar, its Stop button live across the step.
     ///
-    /// The banner is redrawn per step, so the button has to be redrawn with
-    /// it or a tap would land on a control that is no longer there.
+    /// The banner and the button are redrawn per step.
     Batch {
         /// Position in the batch, for the bar.
         done: usize,
@@ -331,8 +322,7 @@ enum StepBanner<'a> {
 /// `targets`'s steps over `decrypted`, each run to its own exit.
 ///
 /// Returns the `convert::Kind`s that failed, empty being the good case. A step
-/// whose output is already there is skipped, so a book listed only for a
-/// missing EPUB does not repack its KFX first.
+/// whose `output` is present is skipped.
 fn convert_outputs(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
@@ -411,8 +401,7 @@ fn convert_outputs(
             step.output.display()
         ));
         if !ok {
-            // A half-written file reads as a finished one on the next scan,
-            // and would be handed to the step after it as an input.
+            // A half-written `step.output` reads as a finished one.
             if let Err(e) = remove_if_present(&step.output) {
                 log(format!("cleanup {}: {e}", step.output.display()));
             }
@@ -425,10 +414,8 @@ fn convert_outputs(
 /// The banner one [`convert_outputs`] step runs under, and the Stop button's
 /// hit rect while there is one.
 ///
-/// [`StepBanner::Batch`] gives its one title line to the step rather than the
-/// book: the count and the bar already say which book this is. Both footprints
-/// match `toast::draw_download_done`, which every caller ends on, so the
-/// result banner covers whichever of them was last on the panel.
+/// [`StepBanner::Batch`] gives its one title line to the step. Both footprints
+/// match `toast::draw_download_done`.
 fn draw_step_banner(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
@@ -440,7 +427,7 @@ fn draw_step_banner(
             toast::draw_download_done(fb, renderer, &format!("{title}\n{}", kind.progress())),
             None,
         ),
-        // A batch already asked to stop keeps the bar and loses the button.
+        // A batch asked to stop keeps the bar and loses the button.
         StepBanner::Batch {
             done,
             total,
@@ -479,8 +466,8 @@ fn result_line(failed: &[convert::Kind]) -> String {
 /// One `engine::decrypt` run, its stdout streamed into a banner, then
 /// [`convert_outputs`] over what it wrote.
 ///
-/// Returns the banner message and whether every output the settings ask for is
-/// now there. A zero exit with no file reports as a failure.
+/// Returns the banner message and whether every output the settings ask for
+/// is present. A zero exit with no file reports as a failure.
 ///
 /// [`read_lines`] owns stdout; the loop waits on `input` at [`ENGINE_POLL`].
 ///
@@ -498,9 +485,8 @@ fn decrypt_one(
 ) -> anyhow::Result<(String, bool)> {
     let short = short_title(&book.title, 34);
 
-    // Already decrypted, only the conversions left: `scan::Book::done` counts
-    // those, so a book with a finished decrypt behind it still reaches here.
-    // The engine has nothing to do for it.
+    // `scan::Book::done` counts the conversions; `decrypted` counts the
+    // engine's own output.
     if !decrypted(book) {
         if let Some(msg) = run_engine(fb, renderer, input, eng, book, &short)? {
             return Ok((msg, false));
@@ -629,7 +615,7 @@ fn decrypt_all(
         let (rect, stop_rect) = toast::draw_progress_stop(fb, renderer, &short, i, total);
         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
 
-        // Already decrypted, only the conversions left — see [`decrypt_one`].
+        // `decrypted` alone, with the conversions left — see [`decrypt_one`].
         let mut ok = decrypted(book);
         if ok {
             log(format!(
@@ -789,8 +775,7 @@ fn install_addons(
             InputEvent::Touch(TouchEvent::Up { x, y })
                 if !cancel.load(Ordering::Relaxed) && toast::contains(cancel_rect, x, y) =>
             {
-                // The add-on in flight stops at its next chunk; the one after
-                // it is not started. Whatever was already in place stays.
+                // The add-on in flight stops at its next chunk.
                 cancel.store(true, Ordering::Relaxed);
                 log("add-ons: cancelled");
                 let rect = toast::draw_download_done(fb, renderer, &format!("{title}\nStopping…"));
@@ -906,11 +891,8 @@ pub fn run() -> anyhow::Result<()> {
     input.set_orientation(orient);
 
     // ---- The engine and the converter --------------------------------------
-    // Neither is part of this install and Settings can fetch both, so a
-    // missing one is a state the app runs in rather than a refusal: the grid
-    // still lists what is there, and `no_engine_banner` is where the engine is
-    // missed. Without the converter `convert::Targets` reads both switches as
-    // off and the app decrypts and stops there.
+    // A missing `located` reaches `no_engine_banner`. A missing `converter`
+    // reads `convert::Targets` as both switches off.
     let mut located = engine::locate();
     let mut converter = convert::locate();
     log_addons(located.as_ref().map_err(|e| *e), converter.as_ref());
@@ -1060,8 +1042,8 @@ pub fn run() -> anyhow::Result<()> {
                     Some(pager::PagerHit::Exit) => return Ok(()),
                     Some(pager::PagerHit::Settings) => {
                         let before = cfg.clone();
-                        // Read here rather than at startup: a book downloaded
-                        // while the app was open puts a new folder on the page.
+                        // A book downloaded during this run puts a new folder
+                        // on the page.
                         let folders = scan::candidates(&cfg);
                         log(format!("folders: {folders:?}"));
                         // The panel comes back for one thing other than
@@ -1188,9 +1170,7 @@ pub fn run() -> anyhow::Result<()> {
                         continue;
                     }
 
-                    // Ahead of the cue: a hold that animates and then says
-                    // there is nothing to run reads as a failure rather than
-                    // as something not being installed.
+                    // Ahead of the cue that animates the hold.
                     let Some(engine) = eng.as_ref() else {
                         no_engine_banner(&mut fb, &mut renderer, &mut input)?;
                         repaint!();
@@ -1294,10 +1274,9 @@ mod tests {
     fn the_panel_is_told_what_runs_here_and_the_record_only_names_it() {
         let mut record = install::record::Record::default();
         record.set("engine", "v10.0.30");
-        record.set("bokai", "bokai-v0.1.3");
+        record.set("bokai", "v0.1.3");
 
-        // Nothing runs: a record of what was once fetched is not an install,
-        // and the panel would otherwise name a release of nothing.
+        // A `record` entry is not an install; the probes decide.
         let none = addons_state(&record, None, None);
         assert!(!none.engine.present && none.engine.tag.is_none());
         assert!(!none.bokai.present && none.bokai.tag.is_none());

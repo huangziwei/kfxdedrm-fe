@@ -1,21 +1,6 @@
 //! The Settings page: which [`Row`] each of `ui::panel`'s chips belongs to,
-//! and what a tap on it does to [`Config`].
-//!
-//! [`page`] builds the panel from the settings and [`apply`] is the only thing
-//! that writes back. The items and their rows are built in one pass, so a chip
-//! cannot be drawn on one row and applied to another.
-//!
-//! The Scan chips come from `scan::candidates` rather than from a list here:
-//! which folder a firmware downloads into has moved before, and a sideload
-//! folder is whatever its owner named it.
-//!
-//! The Add-ons row is the one thing here that is not a setting: it returns
-//! [`Exit::Fetch`] instead of changing [`Config`], because the install it
-//! wants needs the panel it is drawn on.
-//!
-//! Blocking sub-loop: [`run`] owns input until a tap on the strip or on that
-//! row. GC16 on open and on rotate, a single-row DU on a change that moves
-//! nothing else.
+//! and what a tap does to [`Config`]. [`page`] builds the panel, [`apply`]
+//! writes back, and [`run`] owns input until a tap on the strip or on Add-ons.
 
 use crate::config::{self, Config};
 use crate::eink::fb::{Framebuffer, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
@@ -33,7 +18,7 @@ const TITLE_PX: f32 = 44.0;
 ///
 /// `pager::NARROWEST_PANEL_W` less `panel::ROW_INSET` and the right margin,
 /// over the ~half-em advance a proportional face averages at `app::FONT_PX`.
-/// A note is drawn unwrapped: a wrap would split the path it names.
+/// A note is drawn unwrapped.
 const NOTE_MAX_CHARS: usize = 55;
 
 /// A row of the page whose chips change a setting.
@@ -162,9 +147,7 @@ fn output_note() -> String {
 
 /// The longest a release tag may run in [`addons_note`] before it is cut.
 ///
-/// Tags come from GitHub and are short — `v10.0.30`, `bokai-v0.1.3` — but the
-/// note is drawn unwrapped and one long one would push the other add-on off
-/// the panel.
+/// `v10.0.30` and `v0.1.3` are the shape they come in.
 const TAG_MAX_CHARS: usize = 16;
 
 /// What is installed, both add-ons on one line.
@@ -198,8 +181,8 @@ fn clip(s: &str, max: usize) -> String {
 
 /// The whole page in draw order, from the settings it shows.
 ///
-/// `folders` is `scan::candidates`, which holds every folder already selected
-/// even at zero books — a selection with no chip could not be undone.
+/// `folders` is `scan::candidates`, holding every selected folder at zero
+/// books.
 ///
 /// `addons` is what `engine::locate` and `convert::locate` found, plus the
 /// releases `install::record` says this app fetched. The two convert chips are
@@ -260,8 +243,7 @@ pub fn page(cfg: &Config, folders: &[Candidate], addons: &AddOns) -> Page {
     p.push(
         Item::Choice {
             label: "Get".into(),
-            // Never filled: it is a button rather than a setting, and nothing
-            // it does is a state this page could be showing.
+            // Never filled: `Get` is a button.
             chips: vec![Chip::new("Download or update", false)],
         },
         Some(Row::AddOns),
@@ -314,10 +296,8 @@ fn title_line_height(renderer: &mut TextRenderer) -> u32 {
 /// Owns input until a tap on the `[ Done ]` strip or on the Add-ons row,
 /// mutating `cfg` in place.
 ///
-/// `folders` is fixed for the life of the panel: it names what is on the
-/// device, which a tap here does not change. `addons` is fixed for the same
-/// reason — the tap that would change it is the one that returns
-/// [`Exit::Fetch`].
+/// `folders` and `addons` are fixed for the life of the panel; the tap that
+/// changes `addons` returns [`Exit::Fetch`].
 pub fn run(
     fb: &mut Framebuffer,
     input: &mut Input,
@@ -443,7 +423,7 @@ mod tests {
             },
             bokai: AddOn {
                 present: true,
-                tag: Some("bokai-v0.1.3".into()),
+                tag: Some("v0.1.3".into()),
             },
         }
     }
@@ -618,8 +598,7 @@ mod tests {
 
     #[test]
     fn a_hand_edited_format_pair_the_page_has_no_chip_for_fills_none() {
-        // `types_kfx = false` is reachable through the file and through no
-        // chip; the row says so by filling nothing rather than by lying.
+        // `types_kfx = false` is reachable through the file, through no chip.
         let cfg = Config {
             types_kfx: false,
             types_mobi: true,
@@ -709,7 +688,7 @@ mod tests {
     fn the_add_ons_note_names_both_of_them_and_what_each_one_is() {
         assert_eq!(
             addons_note(&installed()),
-            "kfxdedrm v10.0.30   ·   bokai bokai-v0.1.3"
+            "kfxdedrm v10.0.30   ·   bokai v0.1.3"
         );
         assert_eq!(
             addons_note(&no_bokai()),
@@ -744,7 +723,7 @@ mod tests {
             ..installed()
         };
         let note = addons_note(&long);
-        assert!(note.contains("bokai bokai-v0.1.3"), "{note}");
+        assert!(note.contains("bokai v0.1.3"), "{note}");
         assert!(note.chars().count() <= NOTE_MAX_CHARS, "{note}");
         assert_eq!(clip("short", 16), "short");
         assert_eq!(clip("0123456789abcdefg", 16), "0123456789abcde…");

@@ -22,8 +22,7 @@ eq("and it is the mobi-capable asset", name, "kfxdedrmmobi.zip")
 check("with a download url", url and url:find("kfxdedrmmobi.zip", 1, true) ~= nil, url)
 eq("that release publishes no checksum", sha, nil)
 
--- Why /releases/latest is the wrong endpoint: it returns the newest release
--- that is not a prerelease, and no such release has ever carried the engine.
+-- /releases/latest returns the newest non-prerelease; none carries the engine.
 local carrying, stable_with_asset = 0, 0
 for _, r in ipairs(fixtures.dedrm) do
     local has = false
@@ -39,26 +38,40 @@ end
 check("several releases carry it", carrying > 1, carrying)
 eq("and none of them is what /releases/latest would return", stable_with_asset, 0)
 
--- bokai: whichever release is newest at the time, taken by asset pattern.
-local btag, burl, bname, bsha = Install.pickRelease(fixtures.sidle, bokai)
-local expected_tag, expected_asset
+-- bokai, taken by asset pattern.
+local bver, burl, bname, bsha = Install.pickRelease(fixtures.sidle, bokai)
+local expected_asset
 for _, r in ipairs(fixtures.sidle) do
     for _, a in ipairs(r.assets) do
-        if not expected_tag and a.name:match(bokai.asset) then
-            expected_tag, expected_asset = r.tag_name, a.name
+        if not expected_asset and a.name:match(bokai.asset) then
+            expected_asset = a.name
         end
     end
 end
-eq("bokai comes off the newest release carrying its asset", btag, expected_tag)
 eq("named by pattern, not by version", bname, expected_asset)
 check("with a download url", burl ~= nil)
 check("and that one publishes a checksum", bsha ~= nil and bsha:find(".sha256", 1, true) ~= nil, bsha)
--- A tag can be published before its assets finish uploading; such a release
--- must not be picked over the last one that is whole.
+
+-- `bokai-v0.1.3` tags a release whose asset carries `v0.1.3`; the sidle tag
+-- `v0.1.9` carries `bokai-v0.1.2-kindle.zip`.
+eq("bokai records the version its asset carries", bver, "v0.1.3")
+local bundled = {}
+for _, r in ipairs(fixtures.sidle) do
+    if not r.tag_name:match("^bokai%-") then bundled[#bundled + 1] = r end
+end
+local sver, _, sname = Install.pickRelease(bundled, bokai)
+eq("the sidle tag v0.1.9 carries bokai v0.1.2", sname, "bokai-v0.1.2-kindle.zip")
+eq("and v0.1.2 is what is recorded", sver, "v0.1.2")
+eq("an asset with no version falls back to the tag",
+    bokai.version("bokai--kindle.zip", "v9.9.9"), "v9.9.9")
+eq("the engine's asset never carries one",
+    engine.version("kfxdedrmmobi.zip", "v10.0.30"), "v10.0.30")
+
+-- `bokai-v9.9.9` carries no assets.
 local half_published = { { tag_name = "bokai-v9.9.9", assets = {} } }
 for _, r in ipairs(fixtures.sidle) do half_published[#half_published + 1] = r end
 eq("a release with no assets yet is passed over",
-    Install.pickRelease(half_published, bokai), expected_tag)
+    Install.pickRelease(half_published, bokai), bver)
 
 eq("a list with nothing matching picks nothing", Install.pickRelease({
     { tag_name = "v1", assets = { { name = "source.zip", browser_download_url = "u" } } },
@@ -113,30 +126,28 @@ eq("no text, no digest", Install.digestFrom(nil, "f.zip"), nil)
 -- The install record, which native/ reads and writes too
 --------------------------------------------------------------------------------
 
--- `native/tests/shared_settings_file.rs` holds the same fixture from the other
--- side. The two renderers have to agree byte for byte, or each frontend
--- rewrites the other's file and re-fetches what is already there.
+-- `native/tests/shared_settings_file.rs` holds the same fixture. The two
+-- renderers agree byte for byte.
 local fixture_path = harness.SPEC .. "/fixtures/installs.txt"
 local fixture = assert(io.open(fixture_path, "r"))
 local expected = fixture:read("*all")
 fixture:close()
 
 eq("the record renders the bytes native/ writes",
-    Install.renderRecord({ engine = "v10.0.30", bokai = "bokai-v0.1.3" }), expected)
+    Install.renderRecord({ engine = "v10.0.30", bokai = "v0.1.3" }), expected)
 
 local read_back = Install.record(fixture_path)
 eq("and reads its own file back", read_back.engine, "v10.0.30")
-eq("both of them", read_back.bokai, "bokai-v0.1.3")
+eq("both of them", read_back.bokai, "v0.1.3")
 eq("a tag off the shared file", Install.installedTag("engine", fixture_path), "v10.0.30")
 eq("and nothing for a key it does not name", Install.installedTag("nope", fixture_path), nil)
 
--- A file that is not there is an empty record, not an error: it is what a
--- device carries until one of the two frontends fetches something.
+-- A file that is not there is an empty record.
 eq("a missing file records nothing", next(Install.record(harness.SPEC .. "/cache/absent.txt")), nil)
 
 local written = harness.SPEC .. "/cache/installs.txt"
 os.remove(written)
-Install.rememberTag("bokai", "bokai-v0.1.3", written)
+Install.rememberTag("bokai", "v0.1.3", written)
 Install.rememberTag("engine", "v10.0.30", written)
 local round = assert(io.open(written, "r"))
 eq("a record written a key at a time is the same file", round:read("*all"), expected)

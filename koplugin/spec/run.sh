@@ -1,6 +1,5 @@
 #!/bin/sh
 # The plugin's suite, on a host. Needs luajit, and unzip for unpack_spec.
-#
 #   koplugin/spec/run.sh              every spec
 #   koplugin/spec/run.sh ports_spec   one of them
 set -eu
