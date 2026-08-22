@@ -30,6 +30,17 @@ Download and unzip the latest `kfxdedrm-fe-v<x.y.z>-kindle.zip` from the [releas
 
 Download and unzip the latest `kfxdedrm-koplugin-v<x.y.z>-kindle.zip` from the [release page](https://github.com/huangziwei/kfxdedrm-fe/releases), then copy `kfxdedrm.koplugin` to `mnt/us/koreader/plugins`. 
 
+## Updating
+
+Both frontends update themselves from this repository's releases, so the copy above is the only one you have to install by hand.
+
+| | where | what happens |
+|:--|:--|:--|
+| the app | `Settings → Get → kfxdedrm-fe` | downloads, checks it starts on this Kindle, then closes; the next launch swaps it in |
+| the plugin | `KFX DeDRM → Update this plugin` | downloads and swaps it in; restart KOReader to load it |
+
+Your settings and the record of which add-ons are installed live in `/mnt/us/extensions/kfxdedrm-fe/` alongside the app, and are carried across an update. The home-screen scriptlet is not touched — it only points at `bin/launch.sh`, so it never needs to change.
+
 
 ## Screenshot
 

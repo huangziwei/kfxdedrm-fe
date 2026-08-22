@@ -1,5 +1,5 @@
--- lib/install's decisions, against the release lists GitHub actually serves
--- and the two archives it actually publishes.
+-- lib/install's decisions, against the three release lists GitHub actually
+-- serves and the archives they actually publish.
 local harness = require("harness")
 local check, eq, eqlist = harness.check, harness.eq, harness.eqlist
 
@@ -11,6 +11,11 @@ local engine = Install.source("engine")
 local bokai = Install.source("bokai")
 check("both sources are named", engine ~= nil and bokai ~= nil)
 eq("an unknown key resolves to nothing", Install.source("nope"), nil)
+
+-- This plugin is not one of the two: it is fetched on its own, into wherever
+-- KOReader loaded it from.
+local app = Install.appSource(harness.PLUGIN)
+eq("and the plugin is not among them", Install.source(app.key), nil)
 
 --------------------------------------------------------------------------------
 -- pickRelease
@@ -83,6 +88,69 @@ eq("a draft is skipped", Install.pickRelease({
 }, engine), nil)
 
 --------------------------------------------------------------------------------
+-- This plugin's own release
+--------------------------------------------------------------------------------
+
+local aver, aurl, aname, asha = Install.pickRelease(fixtures.fe, app)
+eq("the plugin comes off the newest release carrying its asset",
+    aname, "kfxdedrm-koplugin-v0.4.0.zip")
+eq("named by what the filename carries, not by the tag", aver, "v0.4.0")
+check("with a download url", aurl ~= nil)
+check("and a checksum beside it", asha ~= nil and asha:find(".sha256", 1, true) ~= nil, asha)
+
+-- One release carries both frontends; each source takes only its own.
+check("the standalone app's asset is not this one",
+    not ("kfxdedrm-fe-v0.4.0-kindle.zip"):match(app.asset))
+check("nor is the checksum beside its own",
+    not ("kfxdedrm-koplugin-v0.4.0.zip.sha256"):match(app.asset))
+check("nor is an add-on's", not ("bokai-v0.1.3-kindle.zip"):match(app.asset))
+
+-- v0.2.0 and v0.1.0 predate the plugin, and are passed over for the tag alone.
+local early = {}
+for _, r in ipairs(fixtures.fe) do
+    if r.tag_name == "v0.2.0" or r.tag_name == "v0.1.0" then early[#early + 1] = r end
+end
+eq("a release from before the plugin existed carries nothing for it",
+    Install.pickRelease(early, app), nil)
+
+-- The tag `v0.4.0` against the `0.4.0` [workspace.package] spells.
+eq("a later release is offered", Install.isNewer("v0.5.0", "0.4.0"), true)
+eq("and a build already at it is not", Install.isNewer("v0.4.0", "0.4.0"), false)
+eq("nor is a downgrade", Install.isNewer("v0.3.0", "0.4.0"), false)
+eq("whichever side carries the v", Install.isNewer("0.3.0", "v0.4.0"), false)
+eq("a missing component reads as zero", Install.isNewer("v0.5", "0.5.0"), false)
+eq("and the other way round", Install.isNewer("v0.5.0", "0.5"), false)
+eq("a third component still counts", Install.isNewer("v0.5.1", "0.5"), true)
+eq("a release beats its own candidate", Install.isNewer("v0.5.0", "0.5.0-rc1"), true)
+eq("and the candidate does not beat it", Install.isNewer("v0.5.0-rc1", "0.5.0"), false)
+eq("two candidates are not ordered", Install.isNewer("v0.5.0-rc2", "0.5.0-rc1"), false)
+eq("a version that cannot be read starts nothing", Install.isNewer("nightly", "0.4.0"), false)
+eq("nor an empty one", Install.isNewer("", "0.4.0"), false)
+eq("nor a bare v", Install.isNewer("v", "0.4.0"), false)
+eq("and nothing is newer than one", Install.isNewer("v99.0.0", "nightly"), false)
+-- Wider than the u32 `install::selfupdate` reads a component into.
+eq("nor is a component past what the other port can hold",
+    Install.isNewer("v99999999999.0.0", "0.4.0"), false)
+
+-- `_meta.lua` is what a copy KOReader is not holding reports.
+local meta = harness.PLUGIN .. "/_meta.lua"
+local version = Install.metaVersion(meta)
+check("this copy names a version", version ~= nil and version ~= "", version)
+eq("and it reads as one", Install.isNewer("v99.0.0", version), true)
+eq("a file that is not there names none", Install.metaVersion(harness.SPEC .. "/nope.lua"), nil)
+
+-- `build.sh` stamps both from [workspace.package]; `isNewer` compares the
+-- release tag against this one.
+local cargo = assert(io.open(harness.SPEC .. "/../../Cargo.toml", "r"))
+local manifest = cargo:read("*all")
+cargo:close()
+eq("and it is the version Cargo.toml carries",
+    version, manifest:match('%[workspace%.package%]%s*\nversion%s*=%s*"([^"]*)"'))
+
+check("the plugin verifies against the folder it was loaded from", app.verify(harness.PLUGIN))
+check("and not against one with no plugin in it", not app.verify(harness.SPEC))
+
+--------------------------------------------------------------------------------
 -- prefixFor, against the real archive listings
 --------------------------------------------------------------------------------
 
@@ -100,6 +168,13 @@ eq("kfxdedrmmobi.zip unpacks out of its own folder",
     Install.prefixFor(kfx_zip, engine.marker), "kfxdedrm/")
 eq("bokai's zip unpacks out of a deeper one",
     Install.prefixFor(bokai_zip, bokai.marker), "extensions/bokai/")
+local koplugin_zip = {
+    "kfxdedrm.koplugin/", "kfxdedrm.koplugin/lib/",
+    "kfxdedrm.koplugin/_meta.lua", "kfxdedrm.koplugin/main.lua",
+    "kfxdedrm.koplugin/lib/install.lua", "LICENSE",
+}
+eq("the plugin's zip unpacks out of its own folder, LICENSE left behind",
+    Install.prefixFor(koplugin_zip, app.marker), "kfxdedrm.koplugin/")
 eq("an archive rooted on the marker has no prefix",
     Install.prefixFor({ "bin/bokai", "config.xml" }, bokai.marker), "")
 eq("an archive without the marker is refused",

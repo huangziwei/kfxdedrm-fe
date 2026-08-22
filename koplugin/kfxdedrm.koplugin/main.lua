@@ -48,8 +48,8 @@ local KfxDeDRM = WidgetContainer:extend{
     fullname = _("KFX DeDRM"),
 }
 
---- `io.popen` under LuaJIT hands back no exit status, so the shell reports it
---- on a line of its own after the output.
+--- `io.popen` under LuaJIT hands back no exit status. The shell reports it on
+--- a line of its own after the output.
 local EXIT_MARKER = "__kfxdedrm_exit="
 
 local function exists(path)
@@ -58,10 +58,8 @@ end
 
 --- `cmd` run to its own exit: whether it succeeded, and what it wrote.
 ---
---- This blocks. Neither the engine nor bokai is interruptible once started --
---- `native/` polls the touchscreen across a run only to keep its own queue
---- drained, and stops between books, not inside one -- so a tap here queues up
---- and is read by the next `Trapper:info`.
+--- This blocks. Neither the engine nor bokai is interruptible once started.
+--- A tap during a run queues up for the next `Trapper:info`.
 local function run(cmd)
     logger.info("kfxdedrm: run", cmd)
     local pipe = io.popen(cmd .. "; echo " .. EXIT_MARKER .. "$?", "r")
@@ -82,7 +80,7 @@ local function run(cmd)
     return status == "0"
 end
 
---- `remove`, with an already-absent path reading as success.
+--- `remove`, with an absent path reading as success.
 local function remove_if_present(path)
     if not exists(path) then return true end
     return os.remove(path) and true or false
@@ -174,8 +172,8 @@ function KfxDeDRM:registerDocumentRegistryAuxProvider()
         provider_name = self.fullname,
         provider = self.name,
         order = 50, -- order in the OpenWith dialog
-        -- No default-handler offer either way: associating a book or a file
-        -- type with this would turn a stray tap in the file browser into a
+        -- No default-handler offer either way: a book or a file type
+        -- associated with this turns a stray tap in the file browser into a
         -- decrypt run.
         disable_file = true,
         disable_type = true,
@@ -193,9 +191,9 @@ function KfxDeDRM:openFile(file)
     local format = Engine.formatOf(file)
     if not format then return end
     if not Scan.isEncrypted(file, format) then
-        -- The engine copies whatever it receives into `Config.OUT_DIR`, so a
-        -- DRM-free book would yield a second copy of itself. `lib/scan` gates
-        -- the list on this; the file browser lists everything.
+        -- The engine copies whatever it receives into `Config.OUT_DIR`; a
+        -- DRM-free book yields a second copy of itself. `lib/scan` gates the
+        -- list on this, and the file browser lists everything.
         UIManager:show(InfoMessage:new{
             text = _("This book carries no DRM."),
         })
@@ -221,8 +219,7 @@ function KfxDeDRM:scanBooks()
     return Scan.scan(self.cfg, self:targets())
 end
 
---- `cfg.scan_dirs` as one line: the folder itself while there is one, a count
---- once naming them all would run off the screen.
+--- `cfg.scan_dirs` as one line: the folder itself at one, a count above that.
 function KfxDeDRM:foldersSummary()
     local dirs = self.cfg.scan_dirs
     if #dirs == 0 then
@@ -315,7 +312,7 @@ end
 -- Running the engine
 --------------------------------------------------------------------------------
 
---- The engine's output for `book` is already there.
+--- Whether the engine's output for `book` exists.
 local function decrypted(book)
     local out = Engine.outputPath(book.path, Config.OUT_DIR)
     return out ~= nil and exists(out)
@@ -324,8 +321,8 @@ end
 --- `targets`'s steps over `out`, each run to its own exit.
 ---
 --- Returns the `Convert` kinds that failed, none being the good case. A step
---- whose output is already there is skipped, so a book listed only for a
---- missing EPUB does not repack its KFX first.
+--- whose output exists is skipped: a book listed for a missing EPUB alone
+--- leaves its KFX unpacked.
 function KfxDeDRM:convertOutputs(converter, targets, out, title)
     local failed = {}
     for _, step in ipairs(Convert.steps(targets, out)) do
@@ -340,8 +337,7 @@ function KfxDeDRM:convertOutputs(converter, targets, out, title)
                 local ok = run(Convert.convertCommand(converter, step)) and exists(step.output)
                 if not ok then
                     -- A half-written file reads as a finished one on the next
-                    -- scan, and would be handed to the step after it as an
-                    -- input.
+                    -- scan, and reaches the step after it as an input.
                     if not remove_if_present(step.output) then
                         logger.warn("kfxdedrm: cannot remove", step.output)
                     end
@@ -355,8 +351,8 @@ end
 
 --- One book: the engine, then every conversion the settings ask for.
 ---
---- True once each of those outputs is there. A book whose decrypt is already
---- done still reaches here for the conversions alone.
+--- True when each of those outputs exists. A book carrying a finished decrypt
+--- reaches here for the conversions alone.
 function KfxDeDRM:runBook(exe, converter, targets, book)
     if not decrypted(book) then
         if not run(Engine.decryptCommand(exe, book.path, Config.OUT_DIR)) then
@@ -467,37 +463,30 @@ function KfxDeDRM:isInstalled(source)
     return self:getConverter() ~= nil
 end
 
---- One summary line for `source`: what it is now, or why it is not.
+--- One summary line for `source`: the release in place, or the reason for none.
 function KfxDeDRM:fetchOne(source, step)
     local release, err = Install.available(source)
     if not release then
         return T(_("%1: could not read the release list (%2)"), source.name, err)
     end
 
-    if Install.installedTag(source.key) == release.tag and self:isInstalled(source) then
-        return T(_("%1: already at %2"), source.name, release.tag)
+    if Install.installedTag(source.key) == release.version and self:isInstalled(source) then
+        return T(_("%1: already at %2"), source.name, release.version)
     end
 
-    local tag, failure = Install.run(source, release, step)
-    if not tag then
+    local version, failure = Install.run(source, release, step)
+    if not version then
         return T(_("%1: %2"), source.name, failure)
     end
-    Install.rememberTag(source.key, tag)
-    return T(_("%1: installed %2"), source.name, tag)
+    Install.rememberTag(source.key, version)
+    return T(_("%1: installed %2"), source.name, version)
 end
 
---- Both add-ons in one pass: ask GitHub about each, install whatever is not
---- already current, and report the two together.
+--- Both add-ons in one pass: ask GitHub about each, install whichever is
+--- behind its release, and report the two together.
 ---
---- The menu row that calls this sets `keep_menu_open`, so the summary leaves
---- the plugin menu standing with `Books…` at the top of it. Both belong
---- together: a caller that closes the menu makes decrypting the next descent
---- through it rather than the next tap.
----
---- The whole thing blocks: the release list and the download are plain requests
---- and there is nothing to poll them against. The banner therefore reports
---- steps and offers no stop, which is why each `Trapper:info` here skips the
---- dismiss check -- a Pause box that could not take effect would only lie.
+--- Blocking, over a banner that offers no stop: each `Trapper:info` here
+--- skips the dismiss check. The menu row calling this sets `keep_menu_open`.
 function KfxDeDRM:fetchDependencies()
     local NetworkMgr = require("ui/network/manager")
 
@@ -516,6 +505,69 @@ function KfxDeDRM:fetchDependencies()
             self:reprobe()
             Trapper:clear()
             UIManager:show(InfoMessage:new{ text = table.concat(lines, "\n") })
+        end)
+    end)
+end
+
+--- This plugin's own folder.
+---
+--- `PluginLoader` puts it on the module as `path`; `debug.getinfo` answers for
+--- a copy that was required some other way.
+function KfxDeDRM:pluginDir()
+    if self.path then return self.path end
+    return debug.getinfo(1, "S").source:match("^@(.*)/main%.lua$")
+end
+
+--- The version of the copy that is loaded.
+---
+--- `PluginLoader` copies `_meta.lua`'s onto the module; the file itself
+--- answers for a copy loaded any other way.
+function KfxDeDRM:installedVersion()
+    if self.version then return self.version end
+    local dir = self:pluginDir()
+    return dir and Install.metaVersion(dir .. "/_meta.lua")
+end
+
+--- This plugin, from the release the standalone app comes from.
+---
+--- KOReader loads every plugin at startup and holds what it loaded. The copy
+--- this leaves behind is read at the next start.
+function KfxDeDRM:updateSelf()
+    local NetworkMgr = require("ui/network/manager")
+
+    local dir = self:pluginDir()
+    local installed = self:installedVersion()
+    if not dir or not installed then
+        return UIManager:show(InfoMessage:new{
+            text = _("This copy names no folder or no version, so there is nothing to update."),
+        })
+    end
+
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            local source = Install.appSource(dir)
+            local function say(text)
+                Trapper:info(T("%1\n\n%2", source.name, text), false, true)
+            end
+
+            say(_("Asking GitHub…"))
+            local release, err = Install.available(source)
+            local message
+            if not release then
+                message = T(_("%1: could not read the release list (%2)"),
+                    source.name, err)
+            elseif not Install.isNewer(release.version, installed) then
+                message = T(_("%1 %2\nAlready the newest build."), source.name, installed)
+            else
+                local version, failure = Install.run(source, release, say)
+                message = version
+                    and T(_("%1 %2 is installed.\nRestart KOReader to load it."),
+                        source.name, version)
+                    or T(_("%1: %2"), source.name, failure)
+            end
+
+            Trapper:clear()
+            UIManager:show(InfoMessage:new{ text = message })
         end)
     end)
 end
@@ -547,9 +599,9 @@ function KfxDeDRM:toggleScanned(dir)
     self:saveConfig()
 end
 
---- One row per folder that holds a DRM'd book, plus every folder already
---- selected. Counting them stats each folder's entries, so this is built when
---- the submenu opens and not before.
+--- One row per folder holding a DRM'd book, plus every selected folder.
+--- Counting them stats each folder's entries; the submenu opening is what
+--- builds this.
 function KfxDeDRM:folderItems()
     local items = {}
     for _, cand in ipairs(Scan.candidates(self.cfg)) do
@@ -604,8 +656,7 @@ end
 
 --- The release either frontend fetched for `key`, in a form to hang off a path.
 ---
---- Empty for a copy installed by hand: neither binary reports a version, so
---- there is nothing to name.
+--- Empty for a copy installed by hand: neither binary reports a version.
 local function installed_tag(key)
     local tag = Install.installedTag(key)
     return tag and ("  (" .. tag .. ")") or ""
@@ -613,9 +664,8 @@ end
 
 --- What is installed and where it writes.
 ---
---- Opens on this plugin's own build: `_meta.lua` carries the version and
---- `PluginLoader` copies it onto the module, so a copy loaded any other way
---- has none to name.
+--- Opens on this plugin's own build, which `KfxDeDRM:installedVersion` reads
+--- off `_meta.lua`.
 function KfxDeDRM:aboutText()
     local exe, missing = self:getEngine()
     local engine_line = exe and (T(_("Engine: %1"), exe) .. installed_tag("engine"))
@@ -623,8 +673,9 @@ function KfxDeDRM:aboutText()
             and T(_("Engine: not installed at %1"), Engine.BIN_DIR)
             or T(_("Engine: no build in %1 runs here"), Engine.BIN_DIR))
     local converter = self:getConverter()
+    local version = self:installedVersion()
     return table.concat({
-        self.version and T("%1 %2", self.fullname, self.version) or self.fullname,
+        version and T("%1 %2", self.fullname, version) or self.fullname,
         "",
         engine_line,
         converter and (T(_("bokai: %1"), converter) .. installed_tag("bokai"))
@@ -632,6 +683,7 @@ function KfxDeDRM:aboutText()
         "",
         T(_("Decrypted books land in %1."), Config.OUT_DIR),
         T(_("Settings file: %1"), Config.PATH),
+        T(_("Released at %1"), Install.RELEASES_URL),
         "",
         _("The engine and bokai are separate installs, shared with the standalone kfxdedrm-fe app, which fetches and updates them the same way."),
     }, "\n")
@@ -693,6 +745,11 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 text = _("Download or update kfxdedrm and bokai"),
                 keep_menu_open = true,
                 callback = function() self:fetchDependencies() end,
+            },
+            {
+                text = _("Update this plugin"),
+                keep_menu_open = true,
+                callback = function() self:updateSelf() end,
                 separator = true,
             },
             {

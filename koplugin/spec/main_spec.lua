@@ -9,7 +9,7 @@ local KfxDeDRM = assert(loadfile(harness.PLUGIN .. "/main.lua"))()
 check("main.lua returns a plugin on a Kindle", KfxDeDRM.name == "kfxdedrm", KfxDeDRM.name)
 
 -- `PluginLoader` copies every key of `_meta.lua` but `name` onto the module.
--- `loadfile` above skips that, so the spec does it.
+-- `loadfile` above skips that step; this is it.
 local meta = assert(loadfile(harness.PLUGIN .. "/_meta.lua"))()
 for key, value in pairs(meta) do
     if key ~= "name" then KfxDeDRM[key] = value end
@@ -93,14 +93,30 @@ for _, item in ipairs(root.sub_item_table) do
 end
 eq("one row covers both add-ons", dep_rows, 1)
 
+-- The plugin updates itself from a row of its own, which keeps the menu
+-- standing the same way.
+local self_rows = 0
+for _, item in ipairs(root.sub_item_table) do
+    if item.text == "Update this plugin" then
+        self_rows = self_rows + 1
+        check("the update row keeps the menu open", item.keep_menu_open == true)
+    end
+end
+eq("and one row updates this plugin", self_rows, 1)
+
+-- `_meta.lua` answers for a copy `PluginLoader` did not load, which is what
+-- the harness has.
+check("this copy names its own folder", plugin:pluginDir() == harness.PLUGIN, plugin:pluginDir())
+check("and its own version", plugin:installedVersion() ~= nil, plugin:installedVersion())
+
 -- fetchOne's outcomes, with the network stood in for.
 local Install = require("lib.install")
 local engine_source = Install.source("engine")
 local real_available, real_run = Install.available, Install.run
 local function nostep() end
 
--- The record is a real file shared with native/, so the spec keeps its own
--- rather than writing to /mnt/us.
+-- The record is a real file shared with native/. The spec keeps its own,
+-- clear of /mnt/us.
 Install.RECORD_PATH = harness.SPEC .. "/cache/installs.txt"
 os.remove(Install.RECORD_PATH)
 
@@ -110,7 +126,7 @@ Install.available = function() return nil, "no reply" end
 check("a release list that cannot be read is reported",
     plugin:fetchOne(engine_source, nostep):find("no reply", 1, true) ~= nil)
 
-Install.available = function() return { tag = "v10.0.30", name = "kfxdedrmmobi.zip" } end
+Install.available = function() return { version = "v10.0.30", name = "kfxdedrmmobi.zip" } end
 Install.rememberTag("engine", "v10.0.30")
 eq("an install already at that release is left alone",
     plugin:fetchOne(engine_source, nostep), "kfxdedrm: already at v10.0.30")
@@ -121,7 +137,7 @@ check("a failed install says why",
     plugin:fetchOne(engine_source, nostep):find("download failed", 1, true) ~= nil)
 eq("and the older tag stands", Install.installedTag("engine"), "v10.0.29")
 
-Install.run = function(_source, release) return release.tag end
+Install.run = function(_source, release) return release.version end
 eq("a fresh install names what landed",
     plugin:fetchOne(engine_source, nostep), "kfxdedrm: installed v10.0.30")
 eq("and records it", Install.installedTag("engine"), "v10.0.30")

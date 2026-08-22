@@ -1,6 +1,7 @@
 --[[--
 `Install.run` fetches each `Install.SOURCES` entry from GitHub into its own
-extension folder. A port of `native/src/install/mod.rs`.
+extension folder, and `Install.appSource` points it at this plugin. A port of
+`native/src/install/mod.rs` and `native/src/install/selfupdate.rs`.
 ]]
 
 local lfs = require("libs/libkoreader-lfs")
@@ -61,6 +62,34 @@ function Install.source(key)
     return nil
 end
 
+--- Where both frontends are published, and what `aboutText` names for anyone
+--- doing it by hand.
+Install.RELEASES_URL = "github.com/huangziwei/kfxdedrm-fe/releases"
+
+--- This plugin, as a source `Install.run` installs like any other. `dest` is
+--- the plugin's own folder, and `Install.metaVersion` reports the version
+--- `Install.RECORD_PATH` keeps no line for.
+function Install.appSource(dest)
+    return {
+        key = "koplugin",
+        name = "kfxdedrm-koplugin",
+        repo = "huangziwei/kfxdedrm-fe",
+        --- The version rides the filename.
+        asset = "^kfxdedrm%-koplugin%-.+%.zip$",
+        version = function(asset, tag)
+            return asset:match("^kfxdedrm%-koplugin%-(.+)%.zip$") or tag
+        end,
+        --- Names the archive's root: `kfxdedrm.koplugin/_meta.lua`. The
+        --- LICENSE beside it falls outside and is skipped.
+        marker = "_meta.lua",
+        dest = dest,
+        verify = function(dir)
+            return Install.metaVersion(dir .. "/_meta.lua") ~= nil
+                and lfs.attributes(dir .. "/main.lua", "mode") == "file"
+        end,
+    }
+end
+
 --------------------------------------------------------------------------------
 -- Pure: what to fetch, and what to pull out of the archive
 --------------------------------------------------------------------------------
@@ -70,6 +99,51 @@ function Install.bokaiVersion(asset)
     local version = asset:match("^bokai%-(.+)%-kindle%.zip$")
     if version == "" then return nil end
     return version
+end
+
+--- The `version` line of a `_meta.lua`, read as text.
+---
+--- `PluginLoader` copies the same field onto every module it loads; this
+--- answers for a staged download, and for a copy required some other way.
+function Install.metaVersion(path)
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local text = file:read("*all")
+    file:close()
+    return text and text:match('version%s*=%s*"([^"]*)"')
+end
+
+--- The widest a version component may be, matching the `u32` the Rust port
+--- reads one into.
+local COMPONENT_MAX = 4294967295
+
+--- `version` as its numbers and whatever followed them: `v0.5.0-rc1` reads as
+--- `{ 0, 5, 0 }, "-rc1"`. `nil` when it opens with no number at all.
+local function parts(version)
+    local body = tostring(version or ""):gsub("^v", "")
+    local numbers, suffix = body:match("^([%d%.]*)(.*)$")
+    local out = {}
+    for piece in numbers:gmatch("[^%.]+") do
+        local n = tonumber(piece)
+        if not n or n ~= math.floor(n) or n > COMPONENT_MAX then return nil end
+        out[#out + 1] = n
+    end
+    if #out == 0 then return nil end
+    return out, suffix
+end
+
+--- Whether `offered` names a later release than `installed`: dot-separated
+--- numbers, an optional leading `v`, and a `-rc1` suffix sorting before the
+--- same numbers without one. `install::selfupdate::is_newer` reads them alike.
+function Install.isNewer(offered, installed)
+    local a, a_suffix = parts(offered)
+    local b, b_suffix = parts(installed)
+    if not a or not b then return false end
+    for i = 1, math.max(#a, #b) do
+        local x, y = a[i] or 0, b[i] or 0
+        if x ~= y then return x > y end
+    end
+    return a_suffix == "" and b_suffix ~= ""
 end
 
 --- The newest release in `releases` carrying an asset `source` names.
@@ -274,15 +348,15 @@ function Install.available(source)
         return nil, "unreadable reply"
     end
 
-    local tag, asset_url, asset_name, sha_url = Install.pickRelease(releases, source)
-    if not tag then
+    local version, asset_url, asset_name, sha_url = Install.pickRelease(releases, source)
+    if not version then
         return nil, "no release carries " .. source.name
     end
-    return { tag = tag, url = asset_url, name = asset_name, sha = sha_url }
+    return { version = version, url = asset_url, name = asset_name, sha = sha_url }
 end
 
 --- Download, unpack, prove and swap in. `progress` takes one line at a time.
---- Returns `source.version`, or `nil` and a message. `source.dest` is
+--- Returns the version installed, or `nil` and a message. `source.dest` is
 --- untouched until a staged copy has run on this device.
 function Install.run(source, release, progress)
     local function say(text)
@@ -345,8 +419,8 @@ function Install.run(source, release, progress)
     end
     rm_rf(previous)
 
-    logger.info("kfxdedrm: installed", source.name, release.tag, "into", source.dest)
-    return release.tag
+    logger.info("kfxdedrm: installed", source.name, release.version, "into", source.dest)
+    return release.version
 end
 
 --------------------------------------------------------------------------------

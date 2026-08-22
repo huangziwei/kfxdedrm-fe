@@ -38,4 +38,11 @@ local sidle = {
   {tag_name = "v0.1.0", draft = false, prerelease = false, assets = {}},
 }
 
-return { dedrm = dedrm, sidle = sidle }
+local fe = {
+  {tag_name = "v0.4.0", draft = false, prerelease = false, assets = {{name = "kfxdedrm-fe-v0.4.0-kindle.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.4.0/kfxdedrm-fe-v0.4.0-kindle.zip"}, {name = "kfxdedrm-fe-v0.4.0-kindle.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.4.0/kfxdedrm-fe-v0.4.0-kindle.zip.sha256"}, {name = "kfxdedrm-koplugin-v0.4.0.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.4.0/kfxdedrm-koplugin-v0.4.0.zip"}, {name = "kfxdedrm-koplugin-v0.4.0.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.4.0/kfxdedrm-koplugin-v0.4.0.zip.sha256"}}},
+  {tag_name = "v0.3.0", draft = false, prerelease = false, assets = {{name = "kfxdedrm-fe-v0.3.0-kindle.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.3.0/kfxdedrm-fe-v0.3.0-kindle.zip"}, {name = "kfxdedrm-fe-v0.3.0-kindle.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.3.0/kfxdedrm-fe-v0.3.0-kindle.zip.sha256"}, {name = "kfxdedrm-koplugin-v0.3.0.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.3.0/kfxdedrm-koplugin-v0.3.0.zip"}, {name = "kfxdedrm-koplugin-v0.3.0.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.3.0/kfxdedrm-koplugin-v0.3.0.zip.sha256"}}},
+  {tag_name = "v0.2.0", draft = false, prerelease = false, assets = {{name = "kfxdedrm-fe-v0.2.0-kindle.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.2.0/kfxdedrm-fe-v0.2.0-kindle.zip"}, {name = "kfxdedrm-fe-v0.2.0-kindle.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.2.0/kfxdedrm-fe-v0.2.0-kindle.zip.sha256"}}},
+  {tag_name = "v0.1.0", draft = false, prerelease = false, assets = {{name = "kfxdedrm-fe-v0.1.0-kindle.zip", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.1.0/kfxdedrm-fe-v0.1.0-kindle.zip"}, {name = "kfxdedrm-fe-v0.1.0-kindle.zip.sha256", browser_download_url = "https://github.com/huangziwei/kfxdedrm-fe/releases/download/v0.1.0/kfxdedrm-fe-v0.1.0-kindle.zip.sha256"}}},
+}
+
+return { dedrm = dedrm, sidle = sidle, fe = fe }

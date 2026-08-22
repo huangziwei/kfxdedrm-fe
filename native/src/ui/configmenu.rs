@@ -1,6 +1,6 @@
 //! The Settings page: which [`Row`] each of `ui::panel`'s chips belongs to,
 //! and what a tap does to [`Config`]. [`page`] builds the panel, [`apply`]
-//! writes back, and [`run`] owns input until a tap on the strip or on Add-ons.
+//! writes back, and [`run`] owns input until a tap on the strip or on Get.
 
 use crate::config::{self, Config};
 use crate::eink::fb::{Framebuffer, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
@@ -35,8 +35,9 @@ pub enum Row {
     Convert,
     /// One toggle.
     ShowDone,
-    /// Not a setting: one chip that leaves the panel with [`Exit::Fetch`].
-    AddOns,
+    /// Not a setting: two chips, each leaving the panel with its own
+    /// [`Exit`]. See [`GETTABLE`].
+    Get,
 }
 
 /// Why [`run`] returned.
@@ -44,10 +45,22 @@ pub enum Row {
 pub enum Exit {
     /// The `[ Done ]` strip.
     Done,
-    /// The Add-ons row. `app::install_addons` is what it asks for, and the
+    /// The add-ons chip. `app::install_addons` is what it asks for, and the
     /// panel is reopened after it with whatever landed.
     Fetch,
+    /// The kfxdedrm-fe chip. `app::update_app` is what it asks for; a staged
+    /// update closes the app, and `bin/launch.sh` applies it.
+    Update,
 }
+
+/// The [`Row::Get`] chips, in draw order, and where each one leaves the panel.
+///
+/// The page is at the ceiling `ui::panel` cuts rows at: a twelfth item
+/// overflows the shortest panel. One row carries both buttons.
+const GETTABLE: [(&str, Exit); 2] = [
+    ("kfxdedrm + bokai", Exit::Fetch),
+    ("kfxdedrm-fe", Exit::Update),
+];
 
 /// One add-on as the panel sees it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,18 +68,30 @@ pub struct AddOn {
     /// Does a copy that runs on this device exist?
     pub present: bool,
     /// The release recorded for it, when one is. `None` for a copy installed
-    /// by hand: neither binary reports a version, so there is nothing to name.
+    /// by hand: neither binary reports a version.
     pub tag: Option<String>,
 }
 
-/// What the Add-ons row says, and what the two convert chips are gated on.
+/// What the page reports about what is on the device: the two add-ons under
+/// [`Row::Get`], and this app itself on the status line. The two convert chips
+/// are gated on it too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AddOns {
+pub struct Installed {
     pub engine: AddOn,
     pub bokai: AddOn,
+    pub app: App,
 }
 
-impl AddOns {
+/// This app, as the status line sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct App {
+    /// `install::selfupdate::current`, the version this build was compiled at.
+    pub version: String,
+    /// Whether a proven copy waits for `bin/launch.sh`.
+    pub staged: bool,
+}
+
+impl Installed {
     /// Whether `convert::locate` found the converter, which is the one thing
     /// on this page a missing add-on greys out.
     fn converter(&self) -> bool {
@@ -101,14 +126,28 @@ impl Page {
     }
 }
 
-/// The status line under the title.
-fn status(converter: bool) -> &'static str {
-    if converter {
-        "Changes apply as you tap."
+/// The status line under the title, naming the build.
+///
+/// Two clipped tags fill the note under [`Row::Get`]; this line has the width
+/// of the panel.
+fn status(converter: bool, app: &App) -> String {
+    /// The longest this build's version may run before it is cut. `0.4.0` is
+    /// the shape it comes in; the longest tail below takes the rest of the
+    /// line.
+    const VERSION_MAX_CHARS: usize = 11;
+
+    let tail = if app.staged {
+        "update ready, reopen the app"
+    } else if converter {
+        "changes apply as you tap"
     } else {
         // The one thing on this page that has to be done off the device.
-        "Changes apply as you tap. Two chips below need an add-on."
-    }
+        "two chips below need an add-on"
+    };
+    format!(
+        "kfxdedrm-fe {} — {tail}",
+        clip(&app.version, VERSION_MAX_CHARS)
+    )
 }
 
 /// What the Scan row adds up to.
@@ -155,7 +194,7 @@ const TAG_MAX_CHARS: usize = 16;
 /// This is the whole of what the page says about the install: the row above it
 /// is how either one is fetched, and `ui::setup` is where the engine's own
 /// download URL is spelled out for anyone doing it by hand.
-fn addons_note(addons: &AddOns) -> String {
+fn addons_note(addons: &Installed) -> String {
     fn one(name: &str, addon: &AddOn) -> String {
         match (addon.present, addon.tag.as_deref()) {
             (false, _) => format!("{name} not installed"),
@@ -188,7 +227,7 @@ fn clip(s: &str, max: usize) -> String {
 /// releases `install::record` says this app fetched. The two convert chips are
 /// drawn whether or not bokai is there — the setting outlives an install — but
 /// greyed and untappable while it is missing.
-pub fn page(cfg: &Config, folders: &[Candidate], addons: &AddOns) -> Page {
+pub fn page(cfg: &Config, folders: &[Candidate], addons: &Installed) -> Page {
     let mut p = Page {
         items: Vec::new(),
         rows: Vec::new(),
@@ -239,14 +278,17 @@ pub fn page(cfg: &Config, folders: &[Candidate], addons: &AddOns) -> Page {
     );
     p.push(Item::Note(output_note()), None);
 
-    p.push(Item::Heading("Add-ons".into()), None);
+    p.push(Item::Heading("Updates".into()), None);
     p.push(
         Item::Choice {
             label: "Get".into(),
-            // Never filled: `Get` is a button.
-            chips: vec![Chip::new("Download or update", false)],
+            // Never filled: both are buttons.
+            chips: GETTABLE
+                .iter()
+                .map(|(label, _)| Chip::new(*label, false))
+                .collect(),
         },
-        Some(Row::AddOns),
+        Some(Row::Get),
     );
     p.push(Item::Note(addons_note(addons)), None);
 
@@ -267,8 +309,8 @@ fn apply(row: Row, chip: usize, cfg: &mut Config, folders: &[Candidate]) {
                 Some(at) => {
                     cfg.scan_dirs.remove(at);
                 }
-                // Appended, so the file keeps the order they were picked in
-                // and `folders` keeps the order they are drawn in.
+                // Appended: the file keeps the order they were picked in and
+                // `folders` keeps the order they are drawn in.
                 None => cfg.scan_dirs.push(dir),
             }
         }
@@ -284,7 +326,7 @@ fn apply(row: Row, chip: usize, cfg: &mut Config, folders: &[Candidate]) {
         },
         Row::ShowDone => cfg.show_done = !cfg.show_done,
         // `run` leaves the panel on this one before it ever gets here.
-        Row::AddOns => {}
+        Row::Get => {}
     }
 }
 
@@ -293,11 +335,11 @@ fn title_line_height(renderer: &mut TextRenderer) -> u32 {
     renderer.at_px(TITLE_PX, |r| r.line_height())
 }
 
-/// Owns input until a tap on the `[ Done ]` strip or on the Add-ons row,
-/// mutating `cfg` in place.
+/// Owns input until a tap on the `[ Done ]` strip or on the Get row, mutating
+/// `cfg` in place.
 ///
-/// `folders` and `addons` are fixed for the life of the panel; the tap that
-/// changes `addons` returns [`Exit::Fetch`].
+/// `folders` and `installed` are fixed for the life of the panel; the taps
+/// that change either return [`Exit::Fetch`] or [`Exit::Update`].
 pub fn run(
     fb: &mut Framebuffer,
     input: &mut Input,
@@ -305,22 +347,17 @@ pub fn run(
     cfg: &mut Config,
     folders: &[Candidate],
     orient: &mut Orientation,
-    addons: &AddOns,
+    installed: &Installed,
 ) -> anyhow::Result<Exit> {
-    let converter = addons.converter();
-    let mut p = page(cfg, folders, addons);
+    let converter = installed.converter();
+    let status = status(converter, &installed.app);
+    let mut p = page(cfg, folders, installed);
     let mut layout = layout_for(renderer, fb.var.yres, &p.items);
 
     macro_rules! repaint {
         () => {{
             panel::render(
-                fb,
-                renderer,
-                &layout,
-                "Settings",
-                status(converter),
-                TITLE_PX,
-                &p.items,
+                fb, renderer, &layout, "Settings", &status, TITLE_PX, &p.items,
             );
             fb.send_update(panel::full_rect(fb), WAVEFORM_MODE_GC16)?;
         }};
@@ -342,13 +379,17 @@ pub fn run(
                 let Some(row) = p.row(tap.item) else {
                     continue;
                 };
-                if row == Row::AddOns {
-                    return Ok(Exit::Fetch);
+                if row == Row::Get {
+                    // A chip the row does not have is not a tap on the row.
+                    let Some((_, exit)) = GETTABLE.get(tap.chip) else {
+                        continue;
+                    };
+                    return Ok(*exit);
                 }
 
                 let before = std::mem::take(&mut p.items);
                 apply(row, tap.chip, cfg, folders);
-                p = page(cfg, folders, addons);
+                p = page(cfg, folders, installed);
 
                 // The tapped row alone repaints when nothing else moved. The
                 // Scan row rewrites the note under it, a hidden note changes
@@ -415,8 +456,8 @@ mod tests {
     }
 
     /// Both add-ons in place, at the releases this app fetched.
-    fn installed() -> AddOns {
-        AddOns {
+    fn installed() -> Installed {
+        Installed {
             engine: AddOn {
                 present: true,
                 tag: Some("v10.0.30".into()),
@@ -425,20 +466,29 @@ mod tests {
                 present: true,
                 tag: Some("v0.1.3".into()),
             },
+            app: build(),
         }
     }
 
     /// The engine in place, bokai not — the state the two convert chips grey
     /// out for.
-    fn no_bokai() -> AddOns {
-        AddOns {
+    fn no_bokai() -> Installed {
+        Installed {
             bokai: AddOn::default(),
             ..installed()
         }
     }
 
-    fn state(converter: bool) -> AddOns {
+    fn state(converter: bool) -> Installed {
         if converter { installed() } else { no_bokai() }
+    }
+
+    /// This build, with nothing waiting for `bin/launch.sh`.
+    fn build() -> App {
+        App {
+            version: "0.4.0".into(),
+            staged: false,
+        }
     }
 
     /// Every chip of the page, as `(row, label, on, inert)`.
@@ -496,7 +546,7 @@ mod tests {
             Row::Formats,
             Row::Convert,
             Row::ShowDone,
-            Row::AddOns,
+            Row::Get,
         ] {
             assert!(
                 (0..p.items.len()).any(|i| p.row(i) == Some(row)),
@@ -590,7 +640,7 @@ mod tests {
         for (chip, (label, ..)) in FORMAT_SETS.iter().enumerate() {
             tap(&mut cfg, Row::Formats, chip);
             assert_eq!(filled(&cfg, Row::Formats), [*label], "chip {chip}");
-            // KFX is on under either, so no pick can empty the grid by format.
+            // KFX is on under either; no pick empties the grid by format.
             assert!(cfg.types_kfx, "chip {chip} turned every format off");
             assert!(cfg.lists_anything());
         }
@@ -662,26 +712,37 @@ mod tests {
     }
 
     #[test]
-    fn the_add_ons_row_is_a_button_and_never_reads_as_a_setting() {
+    fn the_get_row_is_two_buttons_and_neither_reads_as_a_setting() {
         let p = page(&Config::default(), &folders(), &installed());
         let row = (0..p.items.len())
-            .find(|i| p.row(*i) == Some(Row::AddOns))
+            .find(|i| p.row(*i) == Some(Row::Get))
             .unwrap();
         let Item::Choice { chips, .. } = &p.items[row] else {
             unreachable!()
         };
-        assert_eq!(chips.len(), 1);
-        assert!(!chips[0].on, "a button has no state to fill");
-        assert!(!chips[0].inert, "and it is always tappable");
+        assert_eq!(chips.len(), GETTABLE.len());
+        for (chip, (label, _)) in chips.iter().zip(GETTABLE) {
+            assert_eq!(chip.label, label);
+            assert!(!chip.on, "a button has no state to fill");
+            assert!(!chip.inert, "and both are always tappable");
+        }
 
-        // Nothing it could be handed changes a setting: `run` leaves the panel
-        // before `apply` is reached.
+        // Nothing either could be handed changes a setting: `run` leaves the
+        // panel before `apply` is reached.
         let mut cfg = Config::default();
         let before = cfg.clone();
         for chip in 0..3 {
-            apply(Row::AddOns, chip, &mut cfg, &folders());
+            apply(Row::Get, chip, &mut cfg, &folders());
         }
         assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn each_get_chip_leaves_the_panel_somewhere_of_its_own() {
+        let exits: Vec<Exit> = GETTABLE.iter().map(|(_, exit)| *exit).collect();
+        assert_eq!(exits, [Exit::Fetch, Exit::Update]);
+        // Neither is the way off the page: that is the strip.
+        assert!(!exits.contains(&Exit::Done));
     }
 
     #[test]
@@ -695,17 +756,17 @@ mod tests {
             "kfxdedrm v10.0.30   ·   bokai not installed"
         );
         assert_eq!(
-            addons_note(&AddOns::default()),
+            addons_note(&Installed::default()),
             "kfxdedrm not installed   ·   bokai not installed"
         );
         // A copy this app did not fetch runs all the same, and has no release
         // to name.
-        let by_hand = AddOns {
+        let by_hand = Installed {
             engine: AddOn {
                 present: true,
                 tag: None,
             },
-            ..AddOns::default()
+            ..Installed::default()
         };
         assert_eq!(
             addons_note(&by_hand),
@@ -715,7 +776,7 @@ mod tests {
 
     #[test]
     fn a_tag_long_enough_to_push_the_other_add_on_off_the_panel_is_cut() {
-        let long = AddOns {
+        let long = Installed {
             engine: AddOn {
                 present: true,
                 tag: Some("v10.0.30-rc1+build.20260821".into()),
@@ -731,8 +792,8 @@ mod tests {
 
     #[test]
     fn a_folder_outside_the_library_root_keeps_its_whole_path() {
-        // Reachable by hand-editing the file; `scan::candidates` keeps it on
-        // the page so it can be switched off again.
+        // Reachable by hand-editing the file. `scan::candidates` keeps it on
+        // the page, where a tap switches it off.
         let elsewhere = PathBuf::from("/mnt/base-us/books");
         let cfg = Config {
             scan_dirs: vec![elsewhere.clone()],
@@ -751,7 +812,7 @@ mod tests {
     fn no_note_line_runs_off_the_narrowest_panel() {
         let mut cfg = Config::default();
         let mut lines: Vec<String> = vec![output_note()];
-        for addons in [installed(), no_bokai(), AddOns::default()] {
+        for addons in [installed(), no_bokai(), Installed::default()] {
             lines.push(addons_note(&addons));
         }
         // Every count the scan note can carry, including none selected.
@@ -780,16 +841,61 @@ mod tests {
 
     #[test]
     fn the_status_line_asks_for_the_add_on_only_when_it_is_missing() {
-        assert_ne!(status(true), status(false));
-        assert!(!status(true).contains("add-on"));
-        assert!(status(false).contains("add-on"));
+        let app = build();
+        assert_ne!(status(true, &app), status(false, &app));
+        assert!(!status(true, &app).contains("add-on"));
+        assert!(status(false, &app).contains("add-on"));
+    }
+
+    #[test]
+    fn the_status_line_names_the_build_and_says_when_one_is_waiting() {
+        let app = build();
+        assert_eq!(
+            status(true, &app),
+            "kfxdedrm-fe 0.4.0 — changes apply as you tap"
+        );
+        let staged = App {
+            staged: true,
+            ..build()
+        };
+        assert!(status(true, &staged).contains("reopen the app"));
+        // A staged update is the one thing worth saying, add-on or not.
+        assert_eq!(status(true, &staged), status(false, &staged));
+    }
+
+    /// The status line is drawn from `panel::MARGIN_X`, left of a note, and
+    /// carries the note's budget and a little over.
+    #[test]
+    fn no_status_line_runs_wider_than_the_panel_allows() {
+        /// [`NOTE_MAX_CHARS`] plus the inset a note pays and this line does
+        /// not: `panel::ROW_INSET` over `panel::MARGIN_X`.
+        const STATUS_MAX_CHARS: usize = 57;
+
+        let long = App {
+            version: "0.4.0-rc1+build.20260822".into(),
+            staged: true,
+        };
+        for app in [
+            build(),
+            App {
+                staged: true,
+                ..build()
+            },
+            long,
+        ] {
+            for converter in [true, false] {
+                let line = status(converter, &app);
+                let n = line.chars().count();
+                assert!(n <= STATUS_MAX_CHARS, "{n} chars: {line}");
+            }
+        }
     }
 
     /// The page has to stay a page: `ui::panel` cuts rows at the strip.
     ///
-    /// The sweep stands in for every face the app might load. `app::FONT_PX`
-    /// is 32 and `TextRenderer::line_height` measures around 40 for it, so
-    /// this covers a face half again as tall as anything that gets loaded.
+    /// The sweep stands in for every face the app loads. `app::FONT_PX` is 32
+    /// and `TextRenderer::line_height` measures around 40 for it; 56 is a face
+    /// half again as tall.
     #[test]
     fn the_whole_page_fits_the_shortest_panel() {
         let yres = crate::ui::pager::NARROWEST_PANEL_W;

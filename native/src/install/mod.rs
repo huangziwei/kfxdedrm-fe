@@ -1,10 +1,13 @@
 //! [`install_all`] fetches every [`SOURCES`] entry from GitHub into its own
 //! extension folder and records what landed in [`record`]. A port of
 //! `koplugin/kfxdedrm.koplugin/lib/install.lua`.
+//!
+//! [`selfupdate`] fetches this app the same way, and stops short of the swap.
 
 pub mod archive;
 pub mod http;
 pub mod record;
+pub mod selfupdate;
 
 use std::fs;
 use std::io::Read;
@@ -63,9 +66,13 @@ pub const SOURCES: [Source; 2] = [
         name: "bokai",
         repo: "huangziwei/sidle",
         // The version rides the filename.
-        asset: |name| name.starts_with("bokai-") && name.ends_with("-kindle.zip"),
+        asset: |name| between(name, "bokai-", "-kindle.zip").is_some(),
         // A sidle tag names sidle. bokai's own version rides the filename.
-        version: |asset, tag| bokai_version(asset).unwrap_or(tag).to_string(),
+        version: |asset, tag| {
+            between(asset, "bokai-", "-kindle.zip")
+                .unwrap_or(tag)
+                .to_string()
+        },
         releases: convert::RELEASES_URL,
         asset_name: convert::RELEASE_ASSET,
         // Names the archive's root: `extensions/bokai/bin/bokai`.
@@ -79,10 +86,14 @@ pub fn source(key: &str) -> Option<&'static Source> {
     SOURCES.iter().find(|s| s.key == key)
 }
 
-/// The version in `bokai-<version>-kindle.zip`.
-fn bokai_version(asset: &str) -> Option<&str> {
-    let version = asset.strip_prefix("bokai-")?.strip_suffix("-kindle.zip")?;
-    (!version.is_empty()).then_some(version)
+/// What `name` holds between `prefix` and `suffix`, when it has both and
+/// something in between.
+///
+/// The version an asset carries in its filename: `v0.1.3` out of
+/// `bokai-v0.1.3-kindle.zip`, `v0.4.0` out of `kfxdedrm-fe-v0.4.0-kindle.zip`.
+pub fn between<'a>(name: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
+    let middle = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    (!middle.is_empty()).then_some(middle)
 }
 
 /// The release a [`Source`] installs.
@@ -123,7 +134,7 @@ pub struct Step {
     pub nth: usize,
     pub of: usize,
     pub name: &'static str,
-    /// What is happening now.
+    /// The line under the title.
     pub detail: String,
 }
 
@@ -320,8 +331,32 @@ fn fetch(
 ) -> Result<(), String> {
     let dest = PathBuf::from(source.dest);
     let staging = PathBuf::from(format!("{}.new", source.dest));
-    let zip = PathBuf::from(format!("{}.new.zip", source.dest));
-    let _ = fs::remove_dir_all(&staging);
+    download_and_unpack(client, source, release, &staging, step, cancel)?;
+
+    step("Checking it runs here…".into());
+    if !(source.verify)(&staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err("that build does not run on this Kindle".into());
+    }
+
+    swap_in(&staging, &dest)
+}
+
+/// `release` into `staging`, checksum first, with `bin/` made executable.
+///
+/// `staging` starts empty and is removed again on any failure: a caller that
+/// returns finds a whole unpacked copy or nothing. [`fetch`] swaps it in,
+/// [`selfupdate::update`] leaves it for `bin/launch.sh`.
+pub(crate) fn download_and_unpack(
+    client: &http::Client,
+    source: &Source,
+    release: &Release,
+    staging: &Path,
+    step: &dyn Fn(String),
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let zip = PathBuf::from(format!("{}.zip", staging.display()));
+    let _ = fs::remove_dir_all(staging);
     let _ = fs::remove_file(&zip);
 
     step("Downloading…".into());
@@ -352,7 +387,7 @@ fn fetch(
     }
 
     step("Unpacking…".into());
-    let unpacked = archive::unpack(&zip, source.marker, &staging);
+    let unpacked = archive::unpack(&zip, source.marker, staging);
     let _ = fs::remove_file(&zip);
     match unpacked {
         Ok(written) => log(format!(
@@ -361,21 +396,14 @@ fn fetch(
         )),
         Err(e) => {
             log(format!("{}: {e}", source.name));
-            let _ = fs::remove_dir_all(&staging);
+            let _ = fs::remove_dir_all(staging);
             return Err("the download is not a usable archive".into());
         }
     }
 
     // The archive's Unix modes vary with what wrote it.
     mark_executable(&staging.join("bin"));
-
-    step("Checking it runs here…".into());
-    if !(source.verify)(&staging) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err("that build does not run on this Kindle".into());
-    }
-
-    swap_in(&staging, &dest)
+    Ok(())
 }
 
 /// The staged copy into place, keeping the old one until the move lands.
@@ -573,9 +601,12 @@ mod tests {
 
     #[test]
     fn an_asset_carrying_no_version_falls_back_to_the_tag() {
-        assert_eq!(bokai_version("bokai-v0.1.2-kindle.zip"), Some("v0.1.2"));
-        assert_eq!(bokai_version("bokai--kindle.zip"), None);
-        assert_eq!(bokai_version("kfxdedrmmobi.zip"), None);
+        let version = |asset| between(asset, "bokai-", "-kindle.zip");
+        assert_eq!(version("bokai-v0.1.2-kindle.zip"), Some("v0.1.2"));
+        // Both halves are there and nothing is between them.
+        assert_eq!(version("bokai--kindle.zip"), None);
+        assert_eq!(version("kfxdedrmmobi.zip"), None);
+        assert_eq!(version("bokai-v0.1.2"), None);
         assert_eq!((bokai().version)("kfxdedrmmobi.zip", "v1.2.3"), "v1.2.3");
         // The engine's asset never carries one.
         assert_eq!(

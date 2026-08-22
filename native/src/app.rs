@@ -19,15 +19,16 @@ use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::{Touch, TouchEvent};
 use crate::engine::{self, Engine};
 use crate::font;
-use crate::install;
+use crate::install::{self, selfupdate};
 use crate::log;
 use crate::orientation::Orientation;
 use crate::scan::{self, Book};
 use crate::ui::text::TextRenderer;
 use crate::ui::{configmenu, grid, header, pager, setup, toast};
 
-/// Root holding [`config_path`].
-const BUNDLE_DIR: &str = "/mnt/us/extensions/kfxdedrm-fe";
+/// Root holding [`config_path`], and the folder `selfupdate::carry_over`
+/// copies that file out of.
+const BUNDLE_DIR: &str = selfupdate::EXTENSION_DIR;
 /// `launch.sh` appends this process's stderr here.
 const LOG_PATH: &str = "/mnt/us/logs/kfxdedrm-fe.log";
 
@@ -297,7 +298,7 @@ fn read_lines(out: std::process::ChildStdout) -> std::sync::mpsc::Receiver<Strin
 /// True once `engine::output_path` of `book` exists under `config::OUT_DIR`.
 ///
 /// The engine writes there and nowhere else, whatever out folder it is handed
-/// — see `engine`'s module header — so this is a look, not a move.
+/// — see `engine`'s module header. This looks; it moves nothing.
 fn decrypted(book: &Book) -> bool {
     engine::output_path(&book.path, Path::new(config::OUT_DIR)).is_some_and(|p| p.exists())
 }
@@ -446,7 +447,7 @@ fn draw_step_banner(
     Ok(stop_rect)
 }
 
-/// `remove_file`, with an already-absent path reading as success.
+/// `remove_file`, with an absent path reading as success.
 fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -717,44 +718,43 @@ fn batch_summary(done: usize, failed: usize, left: usize) -> String {
     }
 }
 
-/// Fetch or update both add-ons, drawing progress, and report what landed.
+/// What a download reports while it runs: what is being fetched, and where it
+/// has got to.
+type Progress = dyn Fn(String, String);
+
+/// `work` on a worker thread, behind the download banner named by `opening`.
 ///
-/// The work runs on a worker thread. Neither the release list nor the download
-/// is something the panel can poll, and a screen that stops taking taps for a
-/// minute reads as a crash — so the transfer blocks a thread while this loop
-/// keeps `input` drained, repaints the banner as steps arrive, and sets the
-/// flag the download reads between chunks when Cancel is tapped.
-///
-/// Returns the summary to show, one line per add-on.
-fn install_addons(
+/// This loop keeps `input` drained, repaints the banner as lines arrive, and
+/// on a tap over Cancel sets the flag the download reads between chunks.
+/// `None` when the thread dies on the way.
+fn behind_the_banner<T: Send + 'static>(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
     input: &mut Input,
-) -> anyhow::Result<String> {
+    opening: (&str, &str),
+    work: impl FnOnce(&Progress, &AtomicBool) -> T + Send + 'static,
+) -> anyhow::Result<Option<T>> {
     let cancel = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = std::sync::mpsc::channel::<install::Step>();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
     let flag = Arc::clone(&cancel);
     let worker = std::thread::spawn(move || {
-        install::install_all(
-            &install::record::path(),
-            &|step| {
-                let _ = tx.send(step);
+        work(
+            &move |title: String, detail: String| {
+                let _ = tx.send((title, detail));
             },
             &flag,
         )
     });
 
-    let mut title = "Add-ons".to_string();
-    let mut detail = "Asking GitHub…".to_string();
+    let (mut title, mut detail) = (opening.0.to_string(), opening.1.to_string());
     let (rect, cancel_rect) = toast::draw_download(fb, renderer, &title, &detail);
     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
     let mut painted = Instant::now();
     let mut stale = false;
 
     loop {
-        while let Ok(step) = rx.try_recv() {
-            title = step.title();
-            detail = step.detail;
+        while let Ok(line) = rx.try_recv() {
+            (title, detail) = line;
             stale = true;
         }
         // Every repaint is a full-banner GC16, and a percentage moves several
@@ -765,8 +765,7 @@ fn install_addons(
             painted = Instant::now();
             stale = false;
         }
-        // Every step is drained above before this is read, so nothing the
-        // worker sent is lost by leaving here.
+        // Every line is drained above before this is read.
         if worker.is_finished() {
             break;
         }
@@ -775,9 +774,9 @@ fn install_addons(
             InputEvent::Touch(TouchEvent::Up { x, y })
                 if !cancel.load(Ordering::Relaxed) && toast::contains(cancel_rect, x, y) =>
             {
-                // The add-on in flight stops at its next chunk.
+                // Whatever is in flight stops at its next chunk.
                 cancel.store(true, Ordering::Relaxed);
-                log("add-ons: cancelled");
+                log(format!("{}: cancelled", opening.0));
                 let rect = toast::draw_download_done(fb, renderer, &format!("{title}\nStopping…"));
                 fb.send_update(rect, WAVEFORM_MODE_GC16)?;
                 painted = Instant::now();
@@ -787,9 +786,30 @@ fn install_addons(
         }
     }
 
-    let lines = worker
-        .join()
-        .unwrap_or_else(|_| vec!["Add-ons: failed".to_string()]);
+    Ok(worker.join().ok())
+}
+
+/// Fetch or update both add-ons, and report what landed, one line each.
+fn install_addons(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+) -> anyhow::Result<String> {
+    let lines = behind_the_banner(
+        fb,
+        renderer,
+        input,
+        ("Add-ons", "Asking GitHub…"),
+        |say, cancel| {
+            install::install_all(
+                &install::record::path(),
+                &|step| say(step.title(), step.detail),
+                cancel,
+            )
+        },
+    )?
+    .unwrap_or_else(|| vec!["Add-ons: failed".to_string()]);
+
     for line in &lines {
         log(line);
     }
@@ -806,6 +826,37 @@ fn fetch_addons(
     let rect = toast::draw_download_done(fb, renderer, &msg);
     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
     hold(fb, input, INSTALL_LINGER)
+}
+
+/// Fetch the newest kfxdedrm-fe release, and report what happened.
+///
+/// Returns whether `bin/launch.sh` has an update to apply. `run` closes on
+/// `true`: the swap wants a start with nothing under the folder open.
+fn update_app(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    input: &mut Input,
+) -> anyhow::Result<bool> {
+    let outcome = behind_the_banner(
+        fb,
+        renderer,
+        input,
+        (selfupdate::APP.name, "Asking GitHub…"),
+        |say, cancel| {
+            selfupdate::update(
+                &|detail| say(selfupdate::APP.name.to_string(), detail),
+                cancel,
+            )
+        },
+    )?
+    .unwrap_or_else(|| selfupdate::Outcome::Failed("the update stopped part way".into()));
+
+    let msg = outcome.message();
+    log(msg.replace('\n', " — "));
+    let rect = toast::draw_download_done(fb, renderer, &msg);
+    fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    hold(fb, input, INSTALL_LINGER)?;
+    Ok(outcome.is_staged())
 }
 
 /// The banner a decrypt gets when there is no engine to run it.
@@ -835,26 +886,29 @@ fn log_addons(engine: Result<&Engine, engine::Missing>, converter: Option<&Conve
     }
 }
 
-/// What `ui::configmenu` says about the two add-ons: whether each one runs
-/// here, and which release this app fetched for it.
+/// What `ui::configmenu` says about the device: which add-on runs here, which
+/// release `record` names for it, this build, and whether an update waits for
+/// `bin/launch.sh`.
 ///
-/// The probes decide what is installed and `record` only names it. A record
-/// left behind by a copy that has since been deleted is not an install, and a
-/// copy installed by hand is one the record has never heard of.
-fn addons_state(
+/// The probes decide what is installed; `record` only names it.
+fn installed_state(
     record: &install::record::Record,
     engine: Option<&Engine>,
     converter: Option<&Converter>,
-) -> configmenu::AddOns {
+) -> configmenu::Installed {
     let seen = |present: bool, key: &str| configmenu::AddOn {
         present,
         tag: present
             .then(|| record.get(key).map(str::to_string))
             .flatten(),
     };
-    configmenu::AddOns {
+    configmenu::Installed {
         engine: seen(engine.is_some(), install::SOURCES[0].key),
         bokai: seen(converter.is_some(), install::SOURCES[1].key),
+        app: configmenu::App {
+            version: selfupdate::current().to_string(),
+            staged: selfupdate::staged(),
+        },
     }
 }
 
@@ -1046,13 +1100,15 @@ pub fn run() -> anyhow::Result<()> {
                         // on the page.
                         let folders = scan::candidates(&cfg);
                         log(format!("folders: {folders:?}"));
-                        // The panel comes back for one thing other than
-                        // Done, and that one needs the panel it was drawn on:
+                        // The panel comes back for two things other than
+                        // Done, and both need the panel they were drawn on:
                         // fetch, then reopen it showing what landed.
                         let mut fetched = false;
+                        let mut closing = false;
                         loop {
                             let record = install::record::Record::load(&install::record::path());
-                            let addons = addons_state(&record, eng.as_ref(), converter.as_ref());
+                            let installed =
+                                installed_state(&record, eng.as_ref(), converter.as_ref());
                             let exit = configmenu::run(
                                 &mut fb,
                                 &mut input,
@@ -1060,22 +1116,40 @@ pub fn run() -> anyhow::Result<()> {
                                 &mut cfg,
                                 &folders,
                                 &mut orient,
-                                &addons,
+                                &installed,
                             )?;
-                            if exit == configmenu::Exit::Done {
-                                break;
+                            match exit {
+                                configmenu::Exit::Done => break,
+                                configmenu::Exit::Update => {
+                                    closing = update_app(&mut fb, &mut renderer, &mut input)?;
+                                    if closing {
+                                        break;
+                                    }
+                                }
+                                configmenu::Exit::Fetch => {
+                                    fetch_addons(&mut fb, &mut renderer, &mut input)?;
+                                    let relocated = engine::locate();
+                                    converter = convert::locate();
+                                    log_addons(
+                                        relocated.as_ref().map_err(|e| *e),
+                                        converter.as_ref(),
+                                    );
+                                    eng = relocated.ok();
+                                    fetched = true;
+                                }
                             }
-                            fetch_addons(&mut fb, &mut renderer, &mut input)?;
-                            let relocated = engine::locate();
-                            converter = convert::locate();
-                            log_addons(relocated.as_ref().map_err(|e| *e), converter.as_ref());
-                            eng = relocated.ok();
-                            fetched = true;
                         }
                         if cfg != before
                             && let Err(e) = cfg.store(&cfg_path)
                         {
                             log(format!("settings save failed: {e}"));
+                        }
+                        // Saved first: `bin/launch.sh` swaps the folder the
+                        // settings file sits in as soon as this process is
+                        // gone.
+                        if closing {
+                            log("closing so the staged update can be applied");
+                            return Ok(());
                         }
                         // `Book::done` is read against these, and an install
                         // moves them as surely as a tap on a chip does.
@@ -1277,7 +1351,7 @@ mod tests {
         record.set("bokai", "v0.1.3");
 
         // A `record` entry is not an install; the probes decide.
-        let none = addons_state(&record, None, None);
+        let none = installed_state(&record, None, None);
         assert!(!none.engine.present && none.engine.tag.is_none());
         assert!(!none.bokai.present && none.bokai.tag.is_none());
 
@@ -1286,6 +1360,10 @@ mod tests {
         assert_eq!(install::SOURCES[0].key, "engine");
         assert_eq!(install::SOURCES[1].key, "bokai");
         assert_eq!(record.get(install::SOURCES[0].key), Some("v10.0.30"));
+
+        // This app names itself, and the record has no line for it.
+        assert_eq!(none.app.version, selfupdate::current());
+        assert_eq!(record.get(selfupdate::APP.key), None);
     }
 
     #[test]
