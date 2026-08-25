@@ -68,6 +68,18 @@ end
 walk(root.sub_item_table, "menu")
 check("the menu has rows", rows >= 8, rows)
 
+--- Every row of the menu, at whatever depth it sits.
+local function every_row(list, out)
+    out = out or {}
+    for _, item in ipairs(list) do
+        out[#out + 1] = item
+        if item.sub_item_table then every_row(item.sub_item_table, out) end
+        if item.sub_item_table_func then every_row(item.sub_item_table_func(), out) end
+    end
+    return out
+end
+local all_rows = every_row(root.sub_item_table)
+
 -- Nine rows at the top level: one page on a Scribe, none paged off alone.
 check("the top level is one page", #root.sub_item_table <= 9, #root.sub_item_table)
 
@@ -95,7 +107,7 @@ eq("a stopped batch that also failed", KfxDeDRM.summary(1, 1, 2),
 
 -- One row fetches both add-ons, with `keep_menu_open` holding the menu.
 local dep_rows = 0
-for _, item in ipairs(root.sub_item_table) do
+for _, item in ipairs(all_rows) do
     if item.text == "Install or update the decryption tools" then
         dep_rows = dep_rows + 1
         check("the add-on row keeps the menu open", item.keep_menu_open == true)
@@ -105,7 +117,7 @@ eq("one row covers both add-ons", dep_rows, 1)
 
 -- One row reports what is installed, with `keep_menu_open` holding the menu.
 local status_rows = 0
-for _, item in ipairs(root.sub_item_table) do
+for _, item in ipairs(all_rows) do
     if item.text == "What's installed and where" then
         status_rows = status_rows + 1
         check("the status row keeps the menu open", item.keep_menu_open == true)
@@ -115,7 +127,7 @@ eq("one row reports what is installed", status_rows, 1)
 
 -- One row updates the plugin, with `keep_menu_open` holding the menu.
 local self_rows = 0
-for _, item in ipairs(root.sub_item_table) do
+for _, item in ipairs(all_rows) do
     if item.text == "Update this plugin" then
         self_rows = self_rows + 1
         check("the update row keeps the menu open", item.keep_menu_open == true)
@@ -236,23 +248,26 @@ eq("one of them", plugin:alsoSaveLabel(), "EPUB")
 plugin.cfg.pack_kfx, plugin.cfg.convert_epub = false, false
 eq("neither", plugin:alsoSaveLabel(), "none")
 
--- `text_func` draws that line on the three rows that carry a setting.
+-- `text_func` draws that line on the four rows that carry a setting.
 plugin.cfg.scan_dirs = { "/mnt/us/documents" }
 plugin.cfg.types_kfx = true
 plugin.cfg.convert_epub = true
+plugin.cfg.out_dir = "/mnt/us/documents/dedrm"
 local valued = {}
 for _, item in ipairs(root.sub_item_table) do
     if item.text_func then valued[#valued + 1] = item.text_func() end
 end
-eq("three rows carry their setting", #valued, 3)
+eq("four rows carry their setting", #valued, 4)
 eq("the folder row", valued[1], "Folders to scan: documents")
 eq("the format row", valued[2], "Formats to look for: KFX")
 eq("the extra-format row", valued[3], "Also save as: EPUB")
+eq("the output row", valued[4], "Output folder: dedrm")
 
 local about = plugin:aboutText()
 check("the about screen opens on this plugin's own build",
     about:find(meta.version, 1, true) ~= nil, about)
-check("the about screen names the output folder", about:find("/mnt/us/dedrm", 1, true))
+check("the about screen names the output folder in force",
+    about:find(plugin.cfg.out_dir, 1, true) ~= nil, about)
 check("and the settings file", about:find("config.txt", 1, true))
 
 -- Off a Kindle the plugin declines to load at all.

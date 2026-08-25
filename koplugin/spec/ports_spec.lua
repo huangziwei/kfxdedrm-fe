@@ -52,7 +52,7 @@ local function cfg_eq(a, b)
     for i = 1, #a.scan_dirs do
         if a.scan_dirs[i] ~= b.scan_dirs[i] then return false end
     end
-    for _, k in ipairs({ "types_kfx", "types_mobi", "pack_kfx", "convert_epub", "show_done" }) do
+    for _, k in ipairs({ "out_dir", "types_kfx", "types_mobi", "pack_kfx", "convert_epub", "show_done" }) do
         if a[k] ~= b[k] then return false end
     end
     return true
@@ -60,6 +60,7 @@ end
 
 local round = {
     scan_dirs = { "/mnt/us/documents", "/mnt/us/documents/Sidle" },
+    out_dir = "/mnt/us/documents/dedrm",
     types_kfx = true, types_mobi = false,
     pack_kfx = true, convert_epub = true, show_done = false,
 }
@@ -85,9 +86,34 @@ eq("an absent key keeps its default", tolerant.pack_kfx, false)
 eq("an unparseable value keeps its default", tolerant.types_kfx, true)
 eq("a line with no = keeps its default", tolerant.types_mobi, true)
 
-local refused = Config.parse("scan_dir = " .. Config.OUT_DIR .. "\nscan_dir = relative/path")
+local refused = Config.parse("scan_dir = " .. Config.DEFAULT_OUT_DIR .. "\nscan_dir = relative/path")
 eq("a folder that could eat a book is refused", #refused.scan_dirs, 0)
 check("and lists nothing", not Config.listsAnything(refused))
+eq("the out folder stands", refused.out_dir, Config.DEFAULT_OUT_DIR)
+
+local collide = Config.parse(table.concat({
+    "scan_dir = " .. Config.ITEMS01_DIR,
+    "out_dir = " .. Config.ITEMS01_DIR,
+}, "\n"))
+eq("an out folder that is scanned reverts", collide.out_dir, Config.DEFAULT_OUT_DIR)
+eqlist("and the scanned folder stays", collide.scan_dirs, { Config.ITEMS01_DIR })
+
+local inside = Config.parse(table.concat({
+    "scan_dir = " .. Config.DOCUMENTS_DIR,
+    "out_dir = " .. Config.DOCUMENTS_DIR .. "/dedrm",
+}, "\n"))
+eq("an out folder one level in is kept", inside.out_dir, Config.DOCUMENTS_DIR .. "/dedrm")
+
+for _, bad in ipairs({ "relative/path", "dedrm", "" }) do
+    eq("an out folder naming no full path takes the default (" .. bad .. ")",
+        Config.parse("out_dir = " .. bad).out_dir, Config.DEFAULT_OUT_DIR)
+end
+eq("the refusal names the collision",
+    Config.outDirRefusal(Config.ITEMS01_DIR, { Config.ITEMS01_DIR }), "scanned for books")
+eq("and names a relative path",
+    Config.outDirRefusal("dedrm", {}), "needs a full path")
+eq("an acceptable folder has no refusal",
+    Config.outDirRefusal(Config.DEFAULT_OUT_DIR, { Config.ITEMS01_DIR }), nil)
 
 local twice = Config.parse(table.concat({
     "scan_dir = " .. Config.ITEMS01_DIR,
@@ -115,7 +141,8 @@ end
 local fixtures_dir = harness.SPEC .. "/fixtures/"
 eq("render matches the Rust byte for byte (default)",
     Config.render(Config.default()), read_file(fixtures_dir .. "config-default.txt"))
-local alt = { scan_dirs = {}, types_kfx = false, types_mobi = true,
+local alt = { scan_dirs = {}, out_dir = "/mnt/us/documents/dedrm",
+    types_kfx = false, types_mobi = true,
     pack_kfx = true, convert_epub = true, show_done = false }
 eq("render matches the Rust byte for byte (no folder)",
     Config.render(alt), read_file(fixtures_dir .. "config-no-folder.txt"))

@@ -6,14 +6,19 @@
 # a DRM'd book. An empty value selects none.
 scan_dir = /mnt/us/documents/Downloads/Items01
 
+# Where decrypted books land. Created if it is missing, parents included. A
+# folder listed above is refused, since the engine would copy a MOBI onto
+# itself; a folder inside one is fine, at the depth the scan reads.
+out_dir = /mnt/us/dedrm
+
 # Which formats to list. KFX books are listed when their .sdr voucher is
 # present; MOBI-family books when their own header says they carry DRM, so
 # DRM-free sideloads never appear.
 types_kfx = true
 types_mobi = true
 
-# Extra formats, written into /mnt/us/dedrm beside the engine's own output. Both
-# need the bokai add-on at /mnt/us/extensions/bokai; without it they are ignored.
+# Extra formats, written beside the engine's own output. Both need the bokai
+# add-on at /mnt/us/extensions/bokai; without it they are ignored.
 #   pack_kfx      merge the .kfx-zip bundle into one .kfx container
 #   convert_epub  convert the book to .epub
 pack_kfx = false

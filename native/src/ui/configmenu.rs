@@ -2,7 +2,9 @@
 //! and what a tap does to [`Config`]. [`page`] builds the panel, [`apply`]
 //! writes back, and [`run`] owns input until a tap on the strip or on Get.
 
-use crate::config::{self, Config};
+use std::path::Path;
+
+use crate::config::Config;
 use crate::eink::fb::{Framebuffer, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
@@ -35,6 +37,9 @@ pub enum Row {
     Convert,
     /// One toggle.
     ShowDone,
+    /// Not a setting the panel writes: one chip carrying `Config::out_dir`,
+    /// leaving the panel with [`Exit::Folder`] for `ui::keyboard` to type.
+    OutDir,
     /// Not a setting: two chips, each leaving the panel with its own
     /// [`Exit`]. See [`GETTABLE`].
     Get,
@@ -51,6 +56,9 @@ pub enum Exit {
     /// The kfxdedrm-fe chip. `app::update_app` is what it asks for; a staged
     /// update closes the app, and `bin/launch.sh` applies it.
     Update,
+    /// The [`Row::OutDir`] chip. `ui::keyboard` types `Config::out_dir`, and
+    /// the panel is reopened on whatever it returns.
+    Folder,
 }
 
 /// The [`Row::Get`] chips, in draw order, and where each one leaves the panel.
@@ -179,9 +187,22 @@ fn scan_note(cfg: &Config, folders: &[Candidate]) -> String {
     )
 }
 
-/// Where decrypted books land.
-fn output_note() -> String {
-    format!("Decrypted books land in {}", config::OUT_DIR)
+/// `Config::out_dir` as the [`Row::OutDir`] chip's label.
+///
+/// The chip column at `pager::NARROWEST_PANEL_W` holds a path of this length;
+/// a longer one keeps its tail, which is the half that differs between one
+/// folder and the next.
+fn out_dir_chip(out_dir: &Path) -> String {
+    /// Chars the chip's own row leaves for a path.
+    const MAX_CHARS: usize = 34;
+
+    let text = out_dir.display().to_string();
+    let n = text.chars().count();
+    if n <= MAX_CHARS {
+        return text;
+    }
+    let tail: String = text.chars().skip(n - MAX_CHARS + 1).collect();
+    format!("…{tail}")
 }
 
 /// The longest a release tag may run in [`addons_note`] before it is cut.
@@ -268,6 +289,14 @@ pub fn page(cfg: &Config, folders: &[Candidate], addons: &Installed) -> Page {
     p.push(Item::Heading("Output".into()), None);
     p.push(
         Item::Choice {
+            label: "Folder".into(),
+            // Never filled: the chip is a button onto `ui::keyboard`.
+            chips: vec![Chip::new(out_dir_chip(&cfg.out_dir), false)],
+        },
+        Some(Row::OutDir),
+    );
+    p.push(
+        Item::Choice {
             label: "Also write".into(),
             chips: vec![
                 Chip::gated("KFX", cfg.pack_kfx, addons.converter()),
@@ -276,7 +305,6 @@ pub fn page(cfg: &Config, folders: &[Candidate], addons: &Installed) -> Page {
         },
         Some(Row::Convert),
     );
-    p.push(Item::Note(output_note()), None);
 
     p.push(Item::Heading("Updates".into()), None);
     p.push(
@@ -325,8 +353,8 @@ fn apply(row: Row, chip: usize, cfg: &mut Config, folders: &[Candidate]) {
             _ => cfg.convert_epub = !cfg.convert_epub,
         },
         Row::ShowDone => cfg.show_done = !cfg.show_done,
-        // `run` leaves the panel on this one before it ever gets here.
-        Row::Get => {}
+        // `run` leaves the panel on these two before it ever gets here.
+        Row::OutDir | Row::Get => {}
     }
 }
 
@@ -335,11 +363,12 @@ fn title_line_height(renderer: &mut TextRenderer) -> u32 {
     renderer.at_px(TITLE_PX, |r| r.line_height())
 }
 
-/// Owns input until a tap on the `[ Done ]` strip or on the Get row, mutating
-/// `cfg` in place.
+/// Owns input until a tap on the `[ Done ]` strip, the Folder chip or the Get
+/// row, mutating `cfg` in place.
 ///
 /// `folders` and `installed` are fixed for the life of the panel; the taps
 /// that change either return [`Exit::Fetch`] or [`Exit::Update`].
+/// [`Exit::Folder`] leaves `Config::out_dir` for the caller to write.
 pub fn run(
     fb: &mut Framebuffer,
     input: &mut Input,
@@ -379,6 +408,9 @@ pub fn run(
                 let Some(row) = p.row(tap.item) else {
                     continue;
                 };
+                if row == Row::OutDir {
+                    return Ok(Exit::Folder);
+                }
                 if row == Row::Get {
                     // A chip the row does not have is not a tap on the row.
                     let Some((_, exit)) = GETTABLE.get(tap.chip) else {
@@ -391,10 +423,9 @@ pub fn run(
                 apply(row, tap.chip, cfg, folders);
                 p = page(cfg, folders, installed);
 
-                // The tapped row alone repaints when nothing else moved. The
-                // Scan row rewrites the note under it, a hidden note changes
-                // the row count, and grey does not survive the two-level DU
-                // refresh a single row gets — any of those takes the panel.
+                // The tapped row repaints alone on an equal row count, an
+                // unchanged neighbour, and no `has_quiet` grey for the
+                // two-level DU a single row gets.
                 let alone = p.items.len() == before.len()
                     && !p.items[tap.item].has_quiet()
                     && (0..p.items.len()).all(|i| i == tap.item || p.items[i] == before[i]);
@@ -437,6 +468,7 @@ fn layout_for(renderer: &mut TextRenderer, yres: u32, items: &[Item]) -> Layout 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
     use std::path::{Path, PathBuf};
 
     fn dir(path: &str, books: usize) -> Candidate {
@@ -705,10 +737,45 @@ mod tests {
     }
 
     #[test]
-    fn the_output_note_names_where_a_decrypted_book_lands() {
-        let note = output_note();
-        assert!(note.contains(config::OUT_DIR));
-        assert_eq!(note.lines().count(), 1);
+    fn the_folder_row_carries_the_whole_path_it_can() {
+        assert_eq!(
+            out_dir_chip(Path::new(config::DEFAULT_OUT_DIR)),
+            config::DEFAULT_OUT_DIR
+        );
+        // The tail is what differs between two folders; the head is cut.
+        let long = Path::new("/mnt/us/documents/Downloads/Items01/decrypted/output");
+        let chip = out_dir_chip(long);
+        assert!(chip.starts_with('…'), "{chip}");
+        assert!(chip.ends_with("decrypted/output"), "{chip}");
+        assert_eq!(chip.chars().count(), 34);
+    }
+
+    #[test]
+    fn the_folder_row_is_a_button_carrying_the_current_folder() {
+        let cfg = Config {
+            out_dir: PathBuf::from("/mnt/us/documents/dedrm"),
+            ..Config::default()
+        };
+        let p = page(&cfg, &folders(), &installed());
+        let row = (0..p.items.len())
+            .find(|i| p.row(*i) == Some(Row::OutDir))
+            .expect("the row is on the page");
+        let Item::Choice { chips, label } = &p.items[row] else {
+            unreachable!()
+        };
+        assert_eq!(label, "Folder");
+        assert_eq!(chips.len(), 1);
+        assert_eq!(chips[0].label, "/mnt/us/documents/dedrm");
+        assert!(!chips[0].on, "a button has no state to fill");
+        assert!(!chips[0].inert);
+    }
+
+    #[test]
+    fn a_tap_on_the_folder_row_moves_no_setting() {
+        let before = Config::default();
+        let mut after = before.clone();
+        apply(Row::OutDir, 0, &mut after, &folders());
+        assert_eq!(before, after);
     }
 
     #[test]
@@ -811,7 +878,7 @@ mod tests {
     #[test]
     fn no_note_line_runs_off_the_narrowest_panel() {
         let mut cfg = Config::default();
-        let mut lines: Vec<String> = vec![output_note()];
+        let mut lines: Vec<String> = Vec::new();
         for addons in [installed(), no_bokai(), Installed::default()] {
             lines.push(addons_note(&addons));
         }

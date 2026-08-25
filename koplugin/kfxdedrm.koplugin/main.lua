@@ -191,7 +191,7 @@ function KfxDeDRM:openFile(file)
     local format = Engine.formatOf(file)
     if not format then return end
     if not Scan.isEncrypted(file, format) then
-        -- The engine copies whatever it receives into `Config.OUT_DIR`; a
+        -- The engine copies whatever it receives into `cfg.out_dir`; a
         -- DRM-free book yields a second copy of itself. `lib/scan` gates the
         -- list on this, and the file browser lists everything.
         UIManager:show(InfoMessage:new{
@@ -252,7 +252,7 @@ local function menu_items_for(books)
 end
 
 function KfxDeDRM:listSubtitle(books)
-    return T(_("%1 to decrypt · into %2"), Scan.pending(books), Config.OUT_DIR)
+    return T(_("%1 to decrypt · into %2"), Scan.pending(books), self.cfg.out_dir)
 end
 
 function KfxDeDRM:showBooks()
@@ -283,7 +283,7 @@ function KfxDeDRM:showBooks()
         end,
         close_callback = function()
             UIManager:close(menu)
-            -- Decrypted books land in `Config.OUT_DIR`, which the browser may
+            -- Decrypted books land in `cfg.out_dir`, which the browser may
             -- be sitting in.
             if self.fm_updated and self.ui and self.ui.onRefresh then
                 self.fm_updated = nil
@@ -312,9 +312,9 @@ end
 -- Running the engine
 --------------------------------------------------------------------------------
 
---- Whether the engine's output for `book` exists.
-local function decrypted(book)
-    local out = Engine.outputPath(book.path, Config.OUT_DIR)
+--- Whether the engine's output for `book` exists under `out_dir`.
+local function decrypted(book, out_dir)
+    local out = Engine.outputPath(book.path, out_dir)
     return out ~= nil and exists(out)
 end
 
@@ -354,17 +354,20 @@ end
 --- True when each of those outputs exists. A book carrying a finished decrypt
 --- reaches here for the conversions alone.
 function KfxDeDRM:runBook(exe, converter, targets, book)
-    if not decrypted(book) then
-        if not run(Engine.decryptCommand(exe, book.path, Config.OUT_DIR)) then
+    local out_dir = self.cfg.out_dir
+    if not decrypted(book, out_dir) then
+        -- The engine's own `mkdir` is one level deep.
+        util.makePath(out_dir)
+        if not run(Engine.decryptCommand(exe, book.path, out_dir)) then
             return false
         end
-        if not decrypted(book) then
+        if not decrypted(book, out_dir) then
             logger.warn("kfxdedrm: engine finished but wrote no file for", book.path)
             return false
         end
     end
 
-    local out = Engine.outputPath(book.path, Config.OUT_DIR)
+    local out = Engine.outputPath(book.path, out_dir)
     if not converter or not out then return true end
     return #self:convertOutputs(converter, targets, out, book.title) == 0
 end
@@ -681,7 +684,7 @@ function KfxDeDRM:aboutText()
         converter and (T(_("bokai: %1"), converter) .. installed_tag("bokai"))
             or T(_("bokai: no build in %1 runs here"), Convert.BIN_DIR),
         "",
-        T(_("Decrypted books land in %1."), Config.OUT_DIR),
+        T(_("Decrypted books land in %1."), self.cfg.out_dir),
         T(_("Settings file: %1"), Config.PATH),
         T(_("Released at %1"), Install.RELEASES_URL),
         "",
@@ -726,6 +729,113 @@ function KfxDeDRM:alsoSaveLabel()
     if self.cfg.pack_kfx then names[#names + 1] = "KFX" end
     if self.cfg.convert_epub then names[#names + 1] = "EPUB" end
     return one_line(names)
+end
+
+--- `cfg.out_dir` for a menu row: the folder's own name, the whole path being
+--- longer than a row holds. `KfxDeDRM:aboutText` is where the path is spelled
+--- out.
+function KfxDeDRM:outDirLabel()
+    return self.cfg.out_dir:match("([^/]+)/*$") or self.cfg.out_dir
+end
+
+--- Writes `dir` as the output folder, or says why it cannot be one.
+---
+--- `Config.outDirRefusal` is the check `Config.sanitized` applies to the file.
+--- A folder accepted here survives being written to one.
+function KfxDeDRM:setOutDir(dir)
+    dir = dir:match("^%s*(.-)/*%s*$")
+    local refusal = Config.outDirRefusal(dir, self.cfg.scan_dirs)
+    if refusal then
+        UIManager:show(InfoMessage:new{
+            text = T(_("%1 cannot be the output folder — it is %2."), dir, refusal),
+        })
+        return false
+    end
+    self.cfg.out_dir = dir
+    self:saveConfig()
+    return true
+end
+
+--- Choosing the output folder: the browser, the keyboard, and the way back.
+function KfxDeDRM:outDirItems()
+    return {
+        {
+            text = _("Browse for a folder"),
+            keep_menu_open = true,
+            callback = function()
+                local PathChooser = require("ui/widget/pathchooser")
+                UIManager:show(PathChooser:new{
+                    select_directory = true,
+                    select_file = false,
+                    path = self.cfg.out_dir,
+                    onConfirm = function(dir) self:setOutDir(dir) end,
+                })
+            end,
+        },
+        {
+            text = _("Type a folder path"),
+            keep_menu_open = true,
+            callback = function()
+                local InputDialog = require("ui/widget/inputdialog")
+                local dialog
+                dialog = InputDialog:new{
+                    title = _("Output folder"),
+                    input = self.cfg.out_dir,
+                    buttons = { {
+                        {
+                            text = _("Cancel"),
+                            callback = function() UIManager:close(dialog) end,
+                        },
+                        {
+                            text = _("Save"),
+                            is_enter_default = true,
+                            callback = function()
+                                if self:setOutDir(dialog:getInputText()) then
+                                    UIManager:close(dialog)
+                                end
+                            end,
+                        },
+                    } },
+                }
+                UIManager:show(dialog)
+                dialog:onShowKeyboard()
+            end,
+            separator = true,
+        },
+        {
+            text = T(_("Reset to %1"), Config.DEFAULT_OUT_DIR),
+            enabled_func = function()
+                return self.cfg.out_dir ~= Config.DEFAULT_OUT_DIR
+            end,
+            callback = function() self:setOutDir(Config.DEFAULT_OUT_DIR) end,
+        },
+    }
+end
+
+--- Installing, updating and reporting, the three of them under one row.
+function KfxDeDRM:toolItems()
+    return {
+        {
+            text = _("Install or update the decryption tools"),
+            keep_menu_open = true,
+            callback = function() self:fetchDependencies() end,
+        },
+        {
+            text = _("Update this plugin"),
+            keep_menu_open = true,
+            callback = function() self:updateSelf() end,
+        },
+        {
+            -- Probes first: an add-on unzipped by hand since KOReader
+            -- started is found here.
+            text = _("What's installed and where"),
+            keep_menu_open = true,
+            callback = function()
+                self:reprobe()
+                UIManager:show(InfoMessage:new{ text = self:aboutText() })
+            end,
+        },
+    }
 end
 
 function KfxDeDRM:addToMainMenu(menu_items)
@@ -778,6 +888,12 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 sub_item_table_func = function() return self:alsoWriteItems() end,
             },
             {
+                text_func = function()
+                    return T(_("Output folder: %1"), self:outDirLabel())
+                end,
+                sub_item_table_func = function() return self:outDirItems() end,
+            },
+            {
                 text = _("Show books already decrypted"),
                 checked_func = function() return self.cfg.show_done end,
                 callback = function()
@@ -787,24 +903,8 @@ function KfxDeDRM:addToMainMenu(menu_items)
                 separator = true,
             },
             {
-                text = _("Install or update the decryption tools"),
-                keep_menu_open = true,
-                callback = function() self:fetchDependencies() end,
-            },
-            {
-                text = _("Update this plugin"),
-                keep_menu_open = true,
-                callback = function() self:updateSelf() end,
-            },
-            {
-                -- Probes first: an add-on unzipped by hand since KOReader
-                -- started is found here.
-                text = _("What's installed and where"),
-                keep_menu_open = true,
-                callback = function()
-                    self:reprobe()
-                    UIManager:show(InfoMessage:new{ text = self:aboutText() })
-                end,
+                text = _("Tools and updates"),
+                sub_item_table_func = function() return self:toolItems() end,
             },
         },
     }

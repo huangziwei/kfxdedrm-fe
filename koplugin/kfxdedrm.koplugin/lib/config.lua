@@ -1,5 +1,6 @@
 --[[--
-Which folders `lib/scan` reads and what it lists out of them.
+Which folders `lib/scan` reads, what it lists out of them, and where
+`lib/engine` writes.
 
 The `key = value` file `native/src/config.rs` writes, at the path it writes it
 to. One device carries both frontends and one set of settings between them,
@@ -9,8 +10,6 @@ KUAL app is selected here, and back.
 `Config.parse` has no failure mode; `Config.sanitized` is the one filter it
 applies. `Config.render` has to match `Config::render` byte for byte, or each
 frontend rewrites the other's file on every save.
-
-Where the engine writes is not a setting -- see `Config.OUT_DIR`.
 ]]
 
 local lfs = require("libs/libkoreader-lfs")
@@ -23,11 +22,9 @@ local Config = {}
 Config.ITEMS01_DIR = "/mnt/us/documents/Downloads/Items01"
 --- Library root: purchases on older models, mixed with sideloads.
 Config.DOCUMENTS_DIR = "/mnt/us/documents"
---- Where the engine writes, and the one place decrypted books land.
----
---- Not a setting: the engine hardcodes this and ignores the out-folder
---- argument it is handed.
-Config.OUT_DIR = "/mnt/us/dedrm"
+--- `cfg.out_dir` before the file names one, and where a refused value reverts
+--- to.
+Config.DEFAULT_OUT_DIR = "/mnt/us/dedrm"
 --- The bokai add-on's root, named in the rendered comments.
 Config.BOKAI_DIR = "/mnt/us/extensions/bokai"
 --- The settings file, shared with the native frontend.
@@ -37,6 +34,7 @@ Config.PATH = "/mnt/us/extensions/kfxdedrm-fe/config.txt"
 function Config.default()
     return {
         scan_dirs = { Config.ITEMS01_DIR },
+        out_dir = Config.DEFAULT_OUT_DIR,
         types_kfx = true,
         types_mobi = true,
         -- Off: the add-on the two of them run is not part of this install.
@@ -65,20 +63,46 @@ local function contains(list, value)
     return false
 end
 
---- Drops any `scan_dirs` entry that would misbehave, and any repeat of one
---- that would not.
+--- Why `cfg.out_dir` cannot be `dir`, worded for the menu.
 ---
---- A relative path resolves against the engine's working directory.
---- `OUT_DIR` holds the engine's own output, and `Engine.outputPath` of a MOBI
---- there is the file itself -- the engine would copy it onto itself.
+--- `Engine.outputPath` of a MOBI under a scanned root is the book's own path,
+--- and the engine copies a MOBI onto itself. A root one level above `dir` is
+--- no match: `Scan.scanIn` reads one level deep.
+function Config.outDirRefusal(dir, scan_dirs)
+    if type(dir) ~= "string" or dir:sub(1, 1) ~= "/" then
+        return "needs a full path"
+    end
+    if contains(scan_dirs, dir) then
+        return "scanned for books"
+    end
+    return nil
+end
+
+--- Every `scan_dirs` entry absolute and listed once, an `out_dir`
+--- `Config.outDirRefusal` accepts, and no folder in both.
+---
+--- A relative `out_dir` takes `DEFAULT_OUT_DIR`. The last step drops the
+--- `scan_dir`: `DEFAULT_OUT_DIR` is itself a `scan_dir` a hand-edited file
+--- may name.
 function Config.sanitized(cfg)
     local kept = {}
     for _, dir in ipairs(cfg.scan_dirs) do
-        if dir:sub(1, 1) == "/" and dir ~= Config.OUT_DIR and not contains(kept, dir) then
+        if dir:sub(1, 1) == "/" and not contains(kept, dir) then
             table.insert(kept, dir)
         end
     end
     cfg.scan_dirs = kept
+
+    if Config.outDirRefusal(cfg.out_dir, cfg.scan_dirs) then
+        cfg.out_dir = Config.DEFAULT_OUT_DIR
+    end
+    local without_out = {}
+    for _, dir in ipairs(cfg.scan_dirs) do
+        if dir ~= cfg.out_dir then
+            table.insert(without_out, dir)
+        end
+    end
+    cfg.scan_dirs = without_out
     return cfg
 end
 
@@ -105,6 +129,8 @@ function Config.parse(text)
                     if value ~= "" then
                         table.insert(scan_dirs, value)
                     end
+                elseif key == "out_dir" then
+                    if value ~= "" then cfg.out_dir = value end
                 elseif key == "types_kfx" then
                     local b = parse_bool(value)
                     if b ~= nil then cfg.types_kfx = b end
@@ -133,8 +159,7 @@ end
 --- The file format, comments included.
 ---
 --- The wording is the native frontend's, down to the panel it names and the
---- grid it describes: this writes the same file, and a reworded copy would
---- churn every line of it each time the other frontend saved.
+--- grid it describes. Both frontends write this one file, byte for byte.
 function Config.render(cfg)
     local folders = {}
     if #cfg.scan_dirs == 0 then
@@ -153,14 +178,19 @@ function Config.render(cfg)
         "# a DRM'd book. An empty value selects none.\n",
         table.concat(folders),
         "\n",
+        "# Where decrypted books land. Created if it is missing, parents included. A\n",
+        "# folder listed above is refused, since the engine would copy a MOBI onto\n",
+        "# itself; a folder inside one is fine, at the depth the scan reads.\n",
+        "out_dir = ", cfg.out_dir, "\n",
+        "\n",
         "# Which formats to list. KFX books are listed when their .sdr voucher is\n",
         "# present; MOBI-family books when their own header says they carry DRM, so\n",
         "# DRM-free sideloads never appear.\n",
         "types_kfx = ", tostring(cfg.types_kfx), "\n",
         "types_mobi = ", tostring(cfg.types_mobi), "\n",
         "\n",
-        "# Extra formats, written into ", Config.OUT_DIR, " beside the engine's own output. Both\n",
-        "# need the bokai add-on at ", Config.BOKAI_DIR, "; without it they are ignored.\n",
+        "# Extra formats, written beside the engine's own output. Both need the bokai\n",
+        "# add-on at ", Config.BOKAI_DIR, "; without it they are ignored.\n",
         "#   pack_kfx      merge the .kfx-zip bundle into one .kfx container\n",
         "#   convert_epub  convert the book to .epub\n",
         "pack_kfx = ", tostring(cfg.pack_kfx), "\n",

@@ -1,9 +1,9 @@
-//! The band above the grid: [`count_label`] left, `config::OUT_DIR` right.
+//! The band above the grid: [`count_label`] left, `Config::out_dir` right.
 //!
-//! Where decrypted books land appears nowhere else on the grid screen, and
-//! nowhere in Settings — it is not a setting.
+//! [`draw`] is the only place the grid screen names `Config::out_dir`.
 
-use crate::config;
+use std::path::Path;
+
 use crate::eink::fb::Framebuffer;
 use crate::ui::text::TextRenderer;
 
@@ -30,8 +30,14 @@ fn count_label(pending: usize, total: usize) -> String {
     }
 }
 
-/// [`count_label`] left, the output folder right, a rule under both.
-pub fn draw(fb: &mut Framebuffer, renderer: &mut TextRenderer, pending: usize, total: usize) {
+/// [`count_label`] left, `out_dir` right, a rule under both.
+pub fn draw(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    pending: usize,
+    total: usize,
+    out_dir: &Path,
+) {
     let xres = fb.var.xres;
     fb.fill_rect(TOP, 0, xres, HEIGHT, 0xFF);
 
@@ -45,7 +51,7 @@ pub fn draw(fb: &mut Framebuffer, renderer: &mut TextRenderer, pending: usize, t
     );
 
     // Right-aligned, and the only place the destination is named.
-    let dest = format!("→ {}", config::OUT_DIR);
+    let dest = format!("→ {}", out_dir.display());
     let w = renderer.measure_width(&dest);
     let x = (xres.saturating_sub(MARGIN_X) as i32 - w as i32).max(MARGIN_X as i32);
     renderer.draw(fb, x, baseline, &dest, false);

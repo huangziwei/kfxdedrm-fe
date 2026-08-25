@@ -9,7 +9,7 @@ The engine's command surface:
 |:--|:--|
 | *(no args)* | decrypt everything under `documents/` |
 | `test` | exits 0 if this build runs on this device |
-| `dedrm <book> [outdir]` | decrypt one book |
+| `dedrm <book> [outdir]` | decrypt one book, argv[3] the out folder |
 | `dedrm_all [scandir] [outdir]` | decrypt a directory |
 | `keyfile [scandir]` | write a desktop-plugin keyfile |
 | `scan` / `scantruncate [dir] [menu]` | rewrite kfxdedrm's own menu |
@@ -17,11 +17,8 @@ The engine's command surface:
 `Engine.locateIn` calls `test` and `Engine.decryptCommand` calls `dedrm`.
 `dedrm_all` carries no per-book progress.
 
-**The engine does not read the out-folder argument.** It parses
-`dedrm <book>` and writes to `Config.OUT_DIR` whatever it is handed, which is
-why that is a constant and not a setting. `Engine.decryptCommand` passes the
-argument regardless, so a build that does read it writes to the same place and
-needs no change here.
+The out folder argument reaches one non-recursive `mkdir`. A caller hands
+`Engine.decryptCommand` a path whose parents exist.
 
 A port of `native/src/engine.rs`.
 ]]
@@ -158,9 +155,7 @@ end
 --- `<exe> dedrm <book> <out_dir>`, with the engine's own output folded into
 --- stdout so the caller can log what it said.
 ---
---- `out_dir` rides every call and the engine ignores it -- see this module's
---- header. Callers pass `Config.OUT_DIR`, which is where it writes anyway, and
---- it creates that folder itself.
+--- `out_dir` is argv[3], the folder the engine writes into.
 function Engine.decryptCommand(exe, book, out_dir)
     return util.shell_escape({ exe, "dedrm", book, out_dir }) .. " 2>&1"
 end

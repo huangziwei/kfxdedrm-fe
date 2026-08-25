@@ -5,14 +5,14 @@ That depth excludes `Downloads/Items01/updates/`, the `.sdr` sidecar trees, and
 any output folder written inside a scanned root.
 
 `Scan.isEncrypted` gates every entry. The engine copies whatever it receives
-into `Config.OUT_DIR`, and a DRM-free book yields a second copy of itself.
+into `cfg.out_dir`, and a DRM-free book yields a second copy of itself.
 
-A book's `done` waits on every file `Config.OUT_DIR` should hold for it --
-`Convert.outputs` included -- so a conversion that failed leaves the book listed
-for another run.
+A book's `done` waits on every file `cfg.out_dir` should hold for it,
+`Convert.outputs` included. A failed conversion leaves the book listed for
+another run.
 
 `Scan.candidates` is the other half: which folders the settings menu offers,
-read off the device rather than guessed.
+read off the device.
 
 A book's title comes from the filename. No book is opened.
 
@@ -58,8 +58,8 @@ end
 
 --- The format of a DRM'd book at `path` this `cfg` lists, or `nil`.
 ---
---- Shared by `candidate` and `count_books`, so a folder's count matches what
---- the list would actually show there.
+--- Shared by `candidate` and `count_books`: a folder's count matches what the
+--- list shows there.
 local function listable(path, cfg)
     local name = basename(path)
     -- AppleDouble shadows carry the name of a real file on a FAT partition.
@@ -156,8 +156,8 @@ end
 
 --- Books across `roots`, outputs judged against `out_dir`.
 ---
---- `roots` order, `mtime` descending within each. Paths break a tie, which
---- `lfs.dir` alone would leave to the filesystem.
+--- `roots` order, `mtime` descending within each. Paths break a tie that
+--- `lfs.dir` alone leaves to the filesystem.
 function Scan.scanIn(roots, cfg, targets, out_dir)
     local out = {}
     for _, root in ipairs(roots) do
@@ -173,9 +173,9 @@ function Scan.scanIn(roots, cfg, targets, out_dir)
     return out
 end
 
---- `Scan.scanIn` over `cfg.scan_dirs` and `Config.OUT_DIR`.
+--- `Scan.scanIn` over `cfg.scan_dirs` and `cfg.out_dir`.
 function Scan.scan(cfg, targets)
-    return Scan.scanIn(cfg.scan_dirs, cfg, targets, Config.OUT_DIR)
+    return Scan.scanIn(cfg.scan_dirs, cfg, targets, cfg.out_dir)
 end
 
 --- How far under `Config.DOCUMENTS_DIR` `Scan.candidates` looks.
@@ -200,9 +200,8 @@ end
 
 --- `dir`, then its subdirectories down to `depth`.
 ---
---- `.sdr` sidecars are skipped: every KFX book has one, so a library's worth of
---- them is most of what `Config.DOCUMENTS_DIR` holds and none of them is a
---- folder anyone scans.
+--- `.sdr` sidecars are skipped. Every KFX book has one, and a library's worth
+--- of them is most of what `Config.DOCUMENTS_DIR` holds.
 local function collect_dirs(dir, depth, out)
     if lfs.attributes(dir, "mode") ~= "directory" then return end
     table.insert(out, dir)
@@ -247,12 +246,12 @@ function Scan.candidates(cfg)
     return Scan.candidatesIn(Config.DOCUMENTS_DIR, cfg)
 end
 
---- Folders that hold a DRM'd book, plus every folder already selected.
+--- Folders that hold a DRM'd book, plus every `cfg.scan_dirs` entry.
 ---
---- Read off the device rather than guessed: which folder a firmware downloads
---- into has moved before, and a sideload folder is whatever its owner named it.
---- A selected folder stays on the list at zero books, or deselecting it would
---- mean deselecting a row that is no longer drawn.
+--- Read off the device: which folder a firmware downloads into has moved
+--- across firmware versions, and a sideload folder takes whatever name its
+--- owner gave it. A selected folder stays on the list at zero books, keeping
+--- its row drawn for the tap that deselects it.
 function Scan.candidatesIn(root, cfg)
     local dirs = {}
     collect_dirs(root, PROBE_DEPTH, dirs)

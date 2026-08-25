@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use image::DynamicImage;
 
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::convert::{self, Converter, Targets};
 use crate::eink;
 use crate::eink::buttons::{Buttons, PageButton};
@@ -24,7 +24,7 @@ use crate::log;
 use crate::orientation::Orientation;
 use crate::scan::{self, Book};
 use crate::ui::text::TextRenderer;
-use crate::ui::{configmenu, grid, header, pager, setup, toast};
+use crate::ui::{configmenu, grid, header, keyboard, pager, setup, toast};
 
 /// Root holding [`config_path`], and the folder `selfupdate::carry_over`
 /// copies that file out of.
@@ -140,7 +140,7 @@ fn draw_page(
     total_pages: usize,
 ) {
     fb.fill_rect(0, 0, fb.var.xres, fb.var.yres, 0xFF);
-    header::draw(fb, renderer, pending(books), books.len());
+    header::draw(fb, renderer, pending(books), books.len(), &cfg.out_dir);
 
     if books.is_empty() {
         draw_empty(fb, renderer, cfg);
@@ -295,12 +295,21 @@ fn read_lines(out: std::process::ChildStdout) -> std::sync::mpsc::Receiver<Strin
     rx
 }
 
-/// True once `engine::output_path` of `book` exists under `config::OUT_DIR`.
+/// True once `engine::output_path` of `book` exists under `out_dir`.
 ///
-/// The engine writes there and nowhere else, whatever out folder it is handed
-/// — see `engine`'s module header. This looks; it moves nothing.
-fn decrypted(book: &Book) -> bool {
-    engine::output_path(&book.path, Path::new(config::OUT_DIR)).is_some_and(|p| p.exists())
+/// This looks; it moves nothing.
+fn decrypted(book: &Book, out_dir: &Path) -> bool {
+    engine::output_path(&book.path, out_dir).is_some_and(|p| p.exists())
+}
+
+/// `out_dir` and its parents, before `engine::decrypt` spawns.
+///
+/// The engine's own `mkdir` is one level deep — see `engine`'s module header.
+/// A failure here reaches the banner as the spawn's own failure.
+fn ensure_out_dir(out_dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        log(format!("create {} failed: {e}", out_dir.display()));
+    }
 }
 
 /// How a [`convert_outputs`] step announces itself. The two callers want
@@ -483,16 +492,17 @@ fn decrypt_one(
     conv: Option<&Converter>,
     targets: Targets,
     book: &Book,
+    out_dir: &Path,
 ) -> anyhow::Result<(String, bool)> {
     let short = short_title(&book.title, 34);
 
     // `scan::Book::done` counts the conversions; `decrypted` counts the
     // engine's own output.
-    if !decrypted(book) {
-        if let Some(msg) = run_engine(fb, renderer, input, eng, book, &short)? {
+    if !decrypted(book, out_dir) {
+        if let Some(msg) = run_engine(fb, renderer, input, eng, book, &short, out_dir)? {
             return Ok((msg, false));
         }
-        if !decrypted(book) {
+        if !decrypted(book, out_dir) {
             return Ok((
                 format!("{short}\nEngine finished, but wrote no file"),
                 false,
@@ -502,10 +512,7 @@ fn decrypt_one(
         log(format!("already decrypted: {}", book.path.display()));
     }
 
-    let failed = match (
-        conv,
-        engine::output_path(&book.path, Path::new(config::OUT_DIR)),
-    ) {
+    let failed = match (conv, engine::output_path(&book.path, out_dir)) {
         (Some(c), Some(out)) => {
             let mut banner = StepBanner::One(&short);
             convert_outputs(fb, renderer, input, c, targets, &out, &mut banner)?
@@ -525,13 +532,15 @@ fn run_engine(
     eng: &Engine,
     book: &Book,
     short: &str,
+    out_dir: &Path,
 ) -> anyhow::Result<Option<String>> {
     // Two lines here and in the result banner: equal `toast::draw` footprints.
     let rect = toast::draw(fb, renderer, &format!("{short}\nStarting…"));
     fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+    ensure_out_dir(out_dir);
 
     let mut child = match eng
-        .decrypt(&book.path, Path::new(config::OUT_DIR))
+        .decrypt(&book.path, out_dir)
         .stdout(std::process::Stdio::piped())
         .spawn()
     {
@@ -602,9 +611,11 @@ fn decrypt_all(
     conv: Option<&Converter>,
     targets: Targets,
     books: &[Book],
+    out_dir: &Path,
 ) -> anyhow::Result<String> {
     let todo: Vec<&Book> = books.iter().filter(|b| !b.done).collect();
     let total = todo.len();
+    ensure_out_dir(out_dir);
     let started = Instant::now();
     let (mut done, mut failed) = (0usize, 0usize);
 
@@ -617,7 +628,7 @@ fn decrypt_all(
         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
 
         // `decrypted` alone, with the conversions left — see [`decrypt_one`].
-        let mut ok = decrypted(book);
+        let mut ok = decrypted(book, out_dir);
         if ok {
             log(format!(
                 "batch {}/{}: already decrypted {}",
@@ -626,7 +637,7 @@ fn decrypt_all(
                 book.path.display()
             ));
         } else {
-            let status = match eng.decrypt(&book.path, Path::new(config::OUT_DIR)).spawn() {
+            let status = match eng.decrypt(&book.path, out_dir).spawn() {
                 Ok(mut child) => loop {
                     match child.try_wait() {
                         Ok(Some(s)) => break Ok(s),
@@ -657,7 +668,7 @@ fn decrypt_all(
                 Err(e) => Err(e),
             };
 
-            ok = matches!(status, Ok(ref s) if s.success()) && decrypted(book);
+            ok = matches!(status, Ok(ref s) if s.success()) && decrypted(book, out_dir);
             log(format!(
                 "batch {}/{}: {} exit={status:?} ok={ok}",
                 i + 1,
@@ -668,7 +679,7 @@ fn decrypt_all(
 
         if ok
             && let Some(c) = conv
-            && let Some(out) = engine::output_path(&book.path, Path::new(config::OUT_DIR))
+            && let Some(out) = engine::output_path(&book.path, out_dir)
         {
             let mut banner = StepBanner::Batch {
                 done: i,
@@ -1126,6 +1137,18 @@ pub fn run() -> anyhow::Result<()> {
                                         break;
                                     }
                                 }
+                                configmenu::Exit::Folder => {
+                                    let picked = keyboard::run(
+                                        &mut fb,
+                                        &mut input,
+                                        &mut renderer,
+                                        &cfg.out_dir,
+                                        &cfg.scan_dirs,
+                                        &mut orient,
+                                    )?;
+                                    log(format!("out folder: {}", picked.display()));
+                                    cfg.out_dir = picked;
+                                }
                                 configmenu::Exit::Fetch => {
                                     fetch_addons(&mut fb, &mut renderer, &mut input)?;
                                     let relocated = engine::locate();
@@ -1175,6 +1198,7 @@ pub fn run() -> anyhow::Result<()> {
                             converter.as_ref(),
                             targets,
                             &books,
+                            &cfg.out_dir,
                         )?;
                         let rect = toast::draw_download_done(&mut fb, &mut renderer, &msg);
                         fb.send_update(rect, WAVEFORM_MODE_GC16)?;
@@ -1269,6 +1293,7 @@ pub fn run() -> anyhow::Result<()> {
                         converter.as_ref(),
                         targets,
                         &book,
+                        &cfg.out_dir,
                     )?;
                     log(format!("result: ok={ok} {}", msg.replace('\n', " — ")));
                     let rect = toast::draw_download_done(&mut fb, &mut renderer, &msg);

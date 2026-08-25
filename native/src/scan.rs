@@ -4,15 +4,15 @@
 //! and any output folder written inside a scanned root.
 //!
 //! [`is_encrypted`] gates every entry. `engine::decrypt` copies whatever it
-//! receives into `config::OUT_DIR`, and a DRM-free book yields a second copy
+//! receives into `Config::out_dir`, and a DRM-free book yields a second copy
 //! of itself.
 //!
-//! `Book::done` waits on every file `config::OUT_DIR` should hold for that
-//! book — `convert::Targets` included — so a conversion that failed leaves the
-//! book listed for another run.
+//! `Book::done` waits on every file `Config::out_dir` should hold for that
+//! book, `convert::Targets` included. A failed conversion leaves the book
+//! listed for another run.
 //!
 //! [`candidates`] is the other half: which folders the Settings panel offers,
-//! read off the device rather than guessed.
+//! read off the device.
 //!
 //! `Book::title` and `Book::cover_path` come from the filename and
 //! [`THUMBNAILS_DIR`]. No book is opened.
@@ -45,19 +45,19 @@ pub struct Book {
     pub size: u64,
     /// Sort key within a root, newest first.
     pub mtime: SystemTime,
-    /// Every output under `config::OUT_DIR` exists — `engine::output_path`
+    /// Every output under `Config::out_dir` exists — `engine::output_path`
     /// and each `convert::Targets` step's.
     pub done: bool,
 }
 
-/// [`scan_in`] over `Config::scan_dirs`, `config::OUT_DIR` and
+/// [`scan_in`] over `Config::scan_dirs`, `Config::out_dir` and
 /// [`THUMBNAILS_DIR`].
 pub fn scan(cfg: &Config, targets: Targets) -> Vec<Book> {
     scan_in(
         &cfg.scan_dirs,
         cfg,
         targets,
-        Path::new(config::OUT_DIR),
+        &cfg.out_dir,
         Path::new(THUMBNAILS_DIR),
     )
 }
@@ -101,8 +101,8 @@ fn scan_root(
 
 /// The `Format` of a DRM'd book at `path` this `cfg` lists, or `None`.
 ///
-/// Shared by [`candidate`] and [`count_books`], so a folder's chip counts what
-/// the grid would actually show there.
+/// Shared by [`candidate`] and [`count_books`]: a folder's chip counts what
+/// the grid shows there.
 fn listable(path: &Path, cfg: &Config) -> Option<Format> {
     let name = path.file_name()?.to_str()?;
     // AppleDouble shadows carry the name of a real file on a FAT partition.
@@ -190,12 +190,12 @@ impl Candidate {
 /// puts purchases, without walking a library's worth of sidecars.
 const PROBE_DEPTH: usize = 2;
 
-/// Folders that hold a DRM'd book, plus every folder already selected.
+/// Folders that hold a DRM'd book, plus every `Config::scan_dirs` entry.
 ///
-/// Read off the device rather than guessed: which folder a firmware downloads
-/// into has moved before, and a sideload folder is whatever its owner named
-/// it. A selected folder stays on the list at zero books, or deselecting it
-/// would mean deselecting a chip that is no longer drawn.
+/// Read off the device: which folder a firmware downloads into has moved
+/// across firmware versions, and a sideload folder takes whatever name its
+/// owner gave it. A selected folder stays on the list at zero books, keeping
+/// its chip drawn for the tap that deselects it.
 pub fn candidates(cfg: &Config) -> Vec<Candidate> {
     candidates_in(Path::new(config::DOCUMENTS_DIR), cfg)
 }
@@ -223,9 +223,8 @@ pub fn candidates_in(root: &Path, cfg: &Config) -> Vec<Candidate> {
 
 /// `dir`, then its subdirectories down to `depth`, in breadth order.
 ///
-/// `.sdr` sidecars are skipped: every KFX book has one, so a library's worth of
-/// them is most of what `config::DOCUMENTS_DIR` holds and none of them is a
-/// folder anyone scans.
+/// `.sdr` sidecars are skipped. Every KFX book has one, and a library's worth
+/// of them is most of what `config::DOCUMENTS_DIR` holds.
 fn collect_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if !dir.is_dir() {
         return;

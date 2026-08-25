@@ -15,7 +15,7 @@ The converter's command surface:
 
 Every conversion here starts from `Engine.outputPath` -- `<stem>.kfx-zip` for a
 KFX book, the book's own name for a MOBI-family one -- and writes beside it,
-inside `Config.OUT_DIR`.
+inside `cfg.out_dir`.
 
 A port of `native/src/convert.rs`.
 ]]

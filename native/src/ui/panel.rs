@@ -136,7 +136,7 @@ struct Tier {
     air: u32,
 }
 
-const TIERS: [Tier; 3] = [
+const TIERS: [Tier; 4] = [
     Tier {
         heading: 200,
         choice: 200,
@@ -157,6 +157,15 @@ const TIERS: [Tier; 3] = [
         note: 100,
         floor: 72,
         air: 100,
+    },
+    // The last of them: headings and notes at their tightest, `floor`
+    // unchanged at a finger's width.
+    Tier {
+        heading: 110,
+        choice: 130,
+        note: 95,
+        floor: 72,
+        air: 60,
     },
 ];
 

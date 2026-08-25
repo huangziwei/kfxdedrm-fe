@@ -25,6 +25,7 @@ fn the_default_settings_file_is_what_the_plugin_expects() {
 fn a_file_with_no_folder_selected_is_what_the_plugin_expects() {
     let cfg = Config {
         scan_dirs: Vec::new(),
+        out_dir: PathBuf::from("/mnt/us/documents/dedrm"),
         types_kfx: false,
         types_mobi: true,
         pack_kfx: true,
