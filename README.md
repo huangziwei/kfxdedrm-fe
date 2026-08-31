@@ -1,6 +1,6 @@
 # kfxdedrm-fe 
 
-`kfxdedrm-fe ` is a frontend for [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) on a jailbroken Kindle as a standalone scriptlet/extension. A KOReader plugin is also added as an afterthought, both now come with capacity to convert KFX to EPUB on device with [bokai](https://github.com/huangziwei/sidle/releases).
+`kfxdedrm-fe` is a frontend for [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) on a jailbroken Kindle as a standalone scriptlet/extension. A KOReader plugin is also added as an afterthought, both now come with capacity to convert KFX to EPUB on device with [bokai](https://github.com/huangziwei/sidle/releases).
 
 
 ## Read this first
