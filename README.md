@@ -5,12 +5,13 @@
 
 ## Read this first
 
-- Both `kfxdedrm-fe` and `kfxdedrm.koplugin` are just frontends. The core engines for the real jobs are not bundled. You need [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) to remove DRMs, and [bokai](https://github.com/huangziwei/sidle/releases) to convert `kfx-zip` to other formats. You need to either install them yourself first, or fetch them within the apps in their settings's `Update` section. 
-- Format conversion is not ON by default in both frontends, and you have to turn them on manually in settings.
-- It's intentional that this is not a one-tap solution. Friction is added to make sure you know what you are doing. It's highly recommended that you do it on a computer, read everything before installing anything, and understand what each component does what.
-- For compatibility, the `kfxdedrm-fe` scriptlet is tested on Kindle Oasis 2 (9th Gen; 5.16.2.1.1), Kindle Colorsoft (1st Gen; 5.18.0.2), and Kindle Scribe (1st Gen; 5.19.4.0.1). `kfxdedrm.koplugin` is only tested on Kindle Scribe (1st Gen; 5.19.4.0.1). There's no guarantee (from me) that they will work on untested devices and firmwares. It's not recommended to use it on firmwares lower than 5.16.3. 
-- It's not recommended to convert `kfx-zip` to other formats on devices with lower RAM than 512MB. It's also not recommended to convert any files larger than 100MB, no matter how much RAM you have.
+It's intentional that this is not a one-tap solution. Friction is added to make sure you know what you are doing. It's highly recommended that you do it on a computer, read everything before installing anything, and understand what each component does what.
 
+- Both `kfxdedrm-fe` and `kfxdedrm.koplugin` are just frontends. The core engines for the real jobs are not bundled. You need [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) to remove DRMs, and [bokai](https://github.com/huangziwei/sidle/releases) to convert the dedrm'd `kfx-zip` to other formats. You need to either install them yourself first, or fetch them within the apps in their settings's `Update` section. 
+- Format conversion is not ON by default in both frontends, and you have to turn them on manually in settings.
+- It's not recommended to convert `kfx-zip` to other formats on devices with lower RAM than 512MB. It's also not recommended to convert any files larger than 100MB, no matter how much RAM you have.
+- There's also no long-term maintainence promise for this project, as I don't use it personally. I don't even use KOReader. I made this because I am tired of seeing people asked why can't read bought books on KOReader and people answered yes we can't read bought books on KOReader. This is a proof-of-concept that we actualy can. It can be better but I am not really interested in it. So, fork it, change it, and make it how you want it to be.
+- For compatibility, the `kfxdedrm-fe` scriptlet is tested on Kindle Oasis 2 (9th Gen; 5.16.2.1.1), Kindle Colorsoft (1st Gen; 5.18.0.2), and Kindle Scribe (1st Gen; 5.19.4.0.1). `kfxdedrm.koplugin` is only tested on Kindle Scribe (1st Gen; 5.19.4.0.1). There's no guarantee (from me) that they will work on untested devices and firmwares. It's not recommended to use it on firmwares lower than 5.16.3. 
 
 ## Build
 
