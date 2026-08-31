@@ -2,11 +2,14 @@
 
 `kfxdedrm-fe ` is a frontend for [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) on a jailbroken Kindle as a standalone scriptlet/extension. A KOReader plugin is also added as an afterthought, both now come with capacity to convert KFX to EPUB on device with [bokai](https://github.com/huangziwei/sidle/releases).
 
-You might want to know:
 
-- Both `kfxdedrm-fe` and `kfxdedrm.koplugin` are just a frontend. The core engines for the real jobs are not bundled. You need to either install them yourself first, or fetch them within the apps in their settings's `Update` section. 
-- Format conversion is not on by default and you have to turn them on manually in settings, as this is a high risk behavior that one should know what one's doing. 
-- Compatibility, the `kfxdedrm-fe` scriptlet is tested on Kindle Oasis 2 (9th Gen; 5.16.2.1.1), Kindle Colorsoft (1st Gen; 5.18.0.2), Kindle Scribe (1st Gen; 5.19.4.0.1). `kfxdedrm.koplugin` is only tested on Kindle Scribe (1st Gen; 5.19.4.0.1). There's no guarantee from me that they will work on untested devices and firmwares. It's not recommended to use it on firmwares lower than 5.16.3.
+## Read this first
+
+- Both `kfxdedrm-fe` and `kfxdedrm.koplugin` are just frontends. The core engines for the real jobs are not bundled. You need [kfxdedrm](https://github.com/Satsuoni/DeDRM_tools) to remove DRMs, and [bokai](https://github.com/huangziwei/sidle/releases) to convert `kfx-zip` to other formats. You need to either install them yourself first, or fetch them within the apps in their settings's `Update` section. 
+- Format conversion is not ON by default in both frontends, and you have to turn them on manually in settings.
+- It's intentional that this is not a one-tap solution. Friction is added to make sure you know what you are doing. It's highly recommended that you do it on a computer, read everything before installing anything, and understand what each component does what.
+- For compatibility, the `kfxdedrm-fe` scriptlet is tested on Kindle Oasis 2 (9th Gen; 5.16.2.1.1), Kindle Colorsoft (1st Gen; 5.18.0.2), and Kindle Scribe (1st Gen; 5.19.4.0.1). `kfxdedrm.koplugin` is only tested on Kindle Scribe (1st Gen; 5.19.4.0.1). There's no guarantee (from me) that they will work on untested devices and firmwares. It's not recommended to use it on firmwares lower than 5.16.3. 
+- It's not recommended to convert `kfx-zip` to other formats on devices with lower RAM than 512MB. It's also not recommended to convert any files larger than 100MB, no matter how much RAM you have.
 
 
 ## Build
@@ -19,6 +22,7 @@ rustup target add armv7-unknown-linux-musleabihf armv7-unknown-linux-musleabi
 ```
 
 Both land in `device/extensions/kfxdedrm-fe/bin/` and `bin/launch.sh` runs whichever one starts, so a release zip carries the two and no one has to know their device's float ABI. Building just the one your Kindle needs is enough for a hand install.
+
 
 ## Install
 
