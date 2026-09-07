@@ -662,10 +662,9 @@ fn decrypt_all(
                 book.path.display()
             ));
         } else {
-            // Piped and drained, as in [`run_engine`]. The engine writes
-            // progress to stdout; inheriting this process's leaves it writing
-            // down a pipe nothing reads, and it dies of `SIGPIPE` partway
-            // through the book.
+            // Piped and drained, as in [`run_engine`]: the engine's progress
+            // reaches the log, and a child left on this process's stdout dies
+            // of `SIGPIPE` partway through the book.
             let status = match eng
                 .decrypt(&book.path, out_dir)
                 .stdout(std::process::Stdio::piped())

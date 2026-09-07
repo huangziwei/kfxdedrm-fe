@@ -13,7 +13,7 @@ use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::log;
@@ -438,6 +438,9 @@ fn move_dir(from: &Path, to: &Path) -> bool {
     Command::new("mv")
         .arg(from)
         .arg(to)
+        // `mv` says nothing on success, and a child left on this process's
+        // stdout dies of `SIGPIPE`.
+        .stdout(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
 }

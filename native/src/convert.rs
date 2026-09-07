@@ -234,6 +234,11 @@ impl Converter {
     pub fn convert(&self, step: &Step) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("convert").arg(&step.input).arg(&step.output);
+        // A child left on this process's stdout writes to a pipe with no
+        // reader and dies of `SIGPIPE` mid-conversion, so every caller gets it
+        // closed. stderr is left alone and reaches `bin/launch.sh`'s log, which
+        // is where a failed conversion says what went wrong.
+        cmd.stdout(Stdio::null());
         cmd
     }
 }
