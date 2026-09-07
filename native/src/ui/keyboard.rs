@@ -13,7 +13,6 @@ use crate::config;
 use crate::eink::fb::{Framebuffer, MxcfbRect, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
-use crate::orientation::Orientation;
 use crate::ui::grid::outline_rect;
 use crate::ui::pathbar;
 use crate::ui::text::TextRenderer;
@@ -348,7 +347,6 @@ pub fn run(
     renderer: &mut TextRenderer,
     initial: &Path,
     scan_dirs: &[PathBuf],
-    orient: &mut Orientation,
 ) -> anyhow::Result<PathBuf> {
     let lh = renderer.line_height().max(1);
     let mut path = initial.display().to_string();
@@ -445,11 +443,15 @@ pub fn run(
             }
             InputEvent::Page(_) => {}
             InputEvent::Tick => {
-                let o = Orientation::detect();
-                if o != *orient {
-                    *orient = o;
-                    input.set_orientation(o);
+                // This loop blocks until the path is settled, so it is the only
+                // place a rotation or a relayout is noticed while it is up.
+                let pump = fb.pump_events();
+                let turned = input.follow_orientation();
+                if turned || pump.resized.is_some() {
+                    input.set_size(fb.var.xres, fb.var.yres);
                     keys = layout(fb.var.xres, fb.var.yres);
+                }
+                if turned || pump.resized.is_some() || pump.repaint {
                     pressed = None;
                     render_all(fb, renderer, &keys, &path, scan_dirs, shift, lh);
                     fb.send_update(full_rect(fb), WAVEFORM_MODE_GC16)?;

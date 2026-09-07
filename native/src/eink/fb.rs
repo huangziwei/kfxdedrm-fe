@@ -1,8 +1,14 @@
 //! [`Framebuffer`] — a fullscreen X11 window over a packed-RGB backing at
 //! [`CH`] bytes per pixel, with [`Framebuffer::send_update`] presenting dirty
 //! rows in the server's wire format at identity. `_waveform` is ignored.
+//!
+//! The window is WM-managed, so the size it is laid out at is the WM's answer
+//! and not the root's: [`Framebuffer::open`] waits for `MapNotify` and takes
+//! `get_geometry`'s, and [`Framebuffer::pump_events`] follows a later
+//! `ConfigureNotify`. `var`, `backing` and `wire_stride` move together.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -60,6 +66,29 @@ fn wire_channels(conn: &RustConnection, screen: &Screen, bpp: usize) -> Option<[
         offset(visual.green_mask),
         offset(visual.blue_mask),
     ])
+}
+
+/// `events` folded into a [`Pump`] against the `size` being drawn. The last
+/// `ConfigureNotify` wins, and a layout matching `size` answers `None`.
+fn fold(events: &[Event], size: (u32, u32)) -> Pump {
+    let mut pump = Pump::default();
+    for event in events {
+        match event {
+            Event::Expose(_) => pump.repaint = true,
+            // `ConfigureNotify` carries the size the window is laid out at.
+            Event::ConfigureNotify(ev) => {
+                let laid = (u32::from(ev.width), u32::from(ev.height));
+                pump.resized = (laid != size && laid.0 > 0 && laid.1 > 0).then_some(laid);
+            }
+            Event::Error(e) => {
+                // A `put_image` the server rejects arrives here.
+                eprintln!("x11: WARNING request failed: {e:?}");
+                pump.repaint = true;
+            }
+            _ => {}
+        }
+    }
+    pump
 }
 
 /// `pixel_bytes` rounded up to a multiple of `pad`, the bytes `put_image` takes
@@ -125,6 +154,18 @@ pub struct Var {
     pub yres: u32,
 }
 
+/// What [`Framebuffer::pump_events`] answers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Pump {
+    /// Set by `Expose` and by `Event::Error`.
+    pub repaint: bool,
+    /// A `ConfigureNotify` size differing from the one being drawn.
+    pub resized: Option<(u32, u32)>,
+}
+
+/// How long [`Framebuffer::open`] waits for `MapNotify`.
+const LAYOUT_WAIT: Duration = Duration::from_millis(500);
+
 pub struct Framebuffer {
     conn: RustConnection,
     win: Window,
@@ -135,6 +176,8 @@ pub struct Framebuffer {
     /// Wire bytes per scanline: [`wire_stride`] over `xres` and the format's
     /// `scanline_pad`.
     wire_stride: usize,
+    /// The format's `scanline_pad`, in bytes: [`wire_stride`]'s second half.
+    scanline_pad: usize,
     /// `wire_channels`' R, G, B byte offsets. Depth-24 LSB-first is `[2, 1, 0]`.
     chan: [usize; 3],
     pub var: Var,
@@ -149,8 +192,9 @@ impl Framebuffer {
     pub fn open() -> Result<Self> {
         let (conn, screen_num) = x11rb::connect(None).context("connect to X ($DISPLAY)")?;
         let screen = conn.setup().roots[screen_num].clone();
-        let xres = screen.width_in_pixels as u32;
-        let yres = screen.height_in_pixels as u32;
+        // The root size, until `get_geometry` answers below.
+        let mut xres = screen.width_in_pixels as u32;
+        let mut yres = screen.height_in_pixels as u32;
         let depth = screen.root_depth;
         let format = conn
             .setup()
@@ -163,12 +207,11 @@ impl Framebuffer {
             .unwrap_or(1);
         // `scanline_pad` is 32 bits on every standard format.
         let scanline_pad = format.map(|f| f.scanline_pad as usize / 8).unwrap_or(4);
-        let wire_stride = wire_stride(xres as usize * bytes_per_pixel, scanline_pad);
         // `[2, 1, 0]` is BGRX LSB-first, the lab126 depth-24 layout.
         let chan = wire_channels(&conn, &screen, bytes_per_pixel).unwrap_or([2, 1, 0]);
         eprintln!(
-            "fb: xres={xres} yres={yres} depth={depth} bytes_per_pixel={bytes_per_pixel} \
-             scanline_pad={scanline_pad} wire_stride={wire_stride} \
+            "fb: root {xres}x{yres} depth={depth} bytes_per_pixel={bytes_per_pixel} \
+             scanline_pad={scanline_pad} \
              chan=[{},{},{}] root_visual=0x{:x}",
             chan[0], chan[1], chan[2], screen.root_visual,
         );
@@ -188,7 +231,9 @@ impl Framebuffer {
             // `CreateWindowAux` sets no `backing_store`.
             &CreateWindowAux::new()
                 .background_pixel(screen.white_pixel)
-                .event_mask(EventMask::EXPOSURE),
+                // `STRUCTURE_NOTIFY` carries `MapNotify` and `ConfigureNotify`;
+                // the WM lays this window out and may not hand it the root size.
+                .event_mask(EventMask::EXPOSURE | EventMask::STRUCTURE_NOTIFY),
         )
         .context("create_window")?;
 
@@ -211,26 +256,41 @@ impl Framebuffer {
             .context("create_gc")?;
         conn.flush().context("flush after map")?;
 
-        // `get_geometry` against root `xres`/`yres`.
+        // `MapNotify` marks the layout done.
+        let deadline = Instant::now() + LAYOUT_WAIT;
+        let mut mapped = false;
+        while !mapped && Instant::now() < deadline {
+            while let Ok(Some(event)) = conn.poll_for_event() {
+                mapped |= matches!(event, Event::MapNotify(_));
+            }
+            if !mapped {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        eprintln!("fb: mapped={mapped}");
+
+        // `get_geometry` now that the WM has laid the window out.
         match conn
             .get_geometry(win)
             .map_err(|e| e.to_string())
             .and_then(|c| c.reply().map_err(|e| e.to_string()))
         {
-            Ok(g) => {
-                if u32::from(g.width) != xres || u32::from(g.height) != yres || g.x != 0 || g.y != 0
-                {
-                    eprintln!(
-                        "fb: WARNING window geometry {}x{}+{}+{} != root {xres}x{yres}+0+0 \
-                         — edge-anchored UI will be clipped",
-                        g.width, g.height, g.x, g.y
-                    );
-                } else {
-                    eprintln!("fb: window geometry matches root ({xres}x{yres})");
-                }
+            Ok(g) if u32::from(g.width) != xres || u32::from(g.height) != yres => {
+                // `get_geometry` outranks the root read above: the UI is drawn
+                // at the size the window was laid out at, not the panel's.
+                eprintln!(
+                    "fb: window is {}x{}, root read {xres}x{yres}",
+                    g.width, g.height
+                );
+                (xres, yres) = (u32::from(g.width), u32::from(g.height));
             }
+            Ok(_) => eprintln!("fb: window geometry matches root ({xres}x{yres})"),
             Err(e) => eprintln!("fb: could not read window geometry: {e}"),
         }
+
+        // `wire_stride` follows `xres`, which `get_geometry` above sets.
+        let wire_stride = wire_stride(xres as usize * bytes_per_pixel, scanline_pad);
+        eprintln!("fb: drawing {xres}x{yres}, wire_stride={wire_stride}");
 
         // `maximum_request_bytes` is the post-BIG-REQUESTS limit, ~16 MB;
         // `setup().maximum_request_length` is the ~256 KB pre-negotiation one.
@@ -251,6 +311,7 @@ impl Framebuffer {
             depth,
             bytes_per_pixel,
             wire_stride,
+            scanline_pad,
             chan,
             var: Var { xres, yres },
             backing,
@@ -296,22 +357,35 @@ impl Framebuffer {
         }
     }
 
-    /// Drain the X event queue, reporting whether a repaint is due. `put_image`
-    /// returns a `VoidCookie`; a request it rejects arrives here as
-    /// `Event::Error`.
-    pub fn pump_events(&mut self) -> bool {
-        let mut needs_repaint = false;
+    /// Drains the X event queue through [`fold`], resizing on a
+    /// `Pump::resized`. `put_image` returns a `VoidCookie`; a request the
+    /// server rejects arrives here as `Event::Error`.
+    ///
+    /// Nothing else reads the queue, so a loop that blocks without calling
+    /// this notices neither an `Expose` nor a relayout.
+    pub fn pump_events(&mut self) -> Pump {
+        let size = (self.var.xres, self.var.yres);
+        let mut events = Vec::new();
         while let Ok(Some(event)) = self.conn.poll_for_event() {
-            match event {
-                Event::Expose(_) => needs_repaint = true,
-                Event::Error(e) => {
-                    eprintln!("x11: WARNING request failed: {e:?}");
-                    needs_repaint = true;
-                }
-                _ => {}
-            }
+            events.push(event);
         }
-        needs_repaint
+        let pump = fold(&events, size);
+        if let Some((w, h)) = pump.resized {
+            self.resize(w, h);
+        }
+        pump
+    }
+
+    /// Draws `w` by `h`: `var`, `backing` and `wire_stride` follow, and
+    /// `backing` is left white for the caller's full repaint.
+    fn resize(&mut self, w: u32, h: u32) {
+        eprintln!(
+            "fb: laid out {w}x{h}, was {}x{}",
+            self.var.xres, self.var.yres
+        );
+        self.var = Var { xres: w, yres: h };
+        self.backing = vec![0xFFu8; w as usize * h as usize * CH];
+        self.wire_stride = wire_stride(w as usize * self.bytes_per_pixel, self.scanline_pad);
     }
 
     /// Present rows `rect.top..rect.top + rect.height`, a band at a time through
@@ -401,7 +475,73 @@ impl Drop for Framebuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{pack_band, wire_stride};
+    use super::{Pump, fold, pack_band, wire_stride};
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{ConfigureNotifyEvent, ExposeEvent};
+
+    /// The size being drawn, as `pump_events` passes it.
+    const SIZE: (u32, u32) = (1264, 1680);
+
+    /// A `ConfigureNotify` laying the window out at `w` by `h`.
+    fn configure(w: u16, h: u16) -> Event {
+        Event::ConfigureNotify(ConfigureNotifyEvent {
+            response_type: 22,
+            sequence: 0,
+            event: 1,
+            window: 1,
+            above_sibling: 0,
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            border_width: 0,
+            override_redirect: false,
+        })
+    }
+
+    fn expose() -> Event {
+        Event::Expose(ExposeEvent {
+            response_type: 12,
+            sequence: 0,
+            window: 1,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            count: 0,
+        })
+    }
+
+    /// An empty queue asks for nothing; an `Expose` asks for a repaint alone.
+    #[test]
+    fn nothing_drained_changes_nothing() {
+        assert_eq!(fold(&[], SIZE), Pump::default());
+        let pump = fold(&[expose()], SIZE);
+        assert!(pump.repaint);
+        assert_eq!(pump.resized, None);
+    }
+
+    /// A layout differing from `size` is reported, and one matching it is not.
+    /// A zero-sided layout is not a size to draw at.
+    #[test]
+    fn only_a_new_layout_is_reported() {
+        assert_eq!(
+            fold(&[configure(1680, 1264)], SIZE).resized,
+            Some((1680, 1264))
+        );
+        assert_eq!(fold(&[configure(1264, 1680)], SIZE).resized, None);
+        assert_eq!(fold(&[configure(0, 0)], SIZE).resized, None);
+    }
+
+    /// The last `ConfigureNotify` of a drain wins, so a drain ending back at
+    /// `size` reports nothing.
+    #[test]
+    fn the_last_layout_of_a_drain_wins() {
+        let events = [configure(1680, 1264), configure(1264, 1680)];
+        assert_eq!(fold(&events, SIZE).resized, None);
+        let events = [configure(1264, 1680), configure(1680, 1264)];
+        assert_eq!(fold(&events, SIZE).resized, Some((1680, 1264)));
+    }
 
     /// `wire_stride` over the shipped panel widths at both `bytes_per_pixel` a
     /// Kindle X server offers, under a 4-byte pad.

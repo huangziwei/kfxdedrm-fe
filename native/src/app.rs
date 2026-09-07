@@ -935,7 +935,8 @@ pub fn run() -> anyhow::Result<()> {
     let mut renderer = TextRenderer::load(FONT_PX)?;
     log(format!("fonts: {}", renderer.chain_description()));
 
-    let mut orient = Orientation::detect();
+    // `Input::follow_orientation` carries it from here.
+    let orient = Orientation::detect();
     let mut fb = Framebuffer::open()?;
     let touch = Touch::open(orient, fb.var.xres, fb.var.yres)?;
     let buttons = match Buttons::open() {
@@ -992,11 +993,25 @@ pub fn run() -> anyhow::Result<()> {
     ));
 
     // ---- Grid loop ----------------------------------------------------------
+    // `setup::run` and `fetch_addons` may have run since `Framebuffer::open`
+    // read the geometry; the first layout is against the size standing now.
+    if fb.pump_events().resized.is_some() {
+        input.set_size(fb.var.xres, fb.var.yres);
+    }
     let mut layout =
         grid::Layout::compute(fb.var.xres, fb.var.yres, header::MARGIN, pager::STRIP_H);
     let mut page = 0usize;
     // `repaint!` computes this from `books` and `layout` before any read.
     let mut total_pages;
+
+    // The grid against the size now being drawn: a rotation and a relayout both
+    // land here.
+    macro_rules! relayout {
+        () => {{
+            layout =
+                grid::Layout::compute(fb.var.xres, fb.var.yres, header::MARGIN, pager::STRIP_H);
+        }};
+    }
 
     macro_rules! repaint {
         () => {{
@@ -1066,6 +1081,15 @@ pub fn run() -> anyhow::Result<()> {
         let deadline = armed.as_ref().map(|a| a.down_at + ARM_THRESHOLD);
         match input.next_deadline(deadline)? {
             InputEvent::Touch(TouchEvent::Down { x, y }) => {
+                // `follow_orientation_now` maps the `Up` this press ends on. A
+                // `Down` read in the frame before a rotation names the wrong
+                // cell, so it arms nothing and the new layout is drawn instead.
+                if input.follow_orientation_now() {
+                    relayout!();
+                    armed = None;
+                    repaint!();
+                    continue;
+                }
                 // `grid::outline_cell` marks the press. [`ARM_THRESHOLD`]
                 // decides the rest.
                 if pager::hit(x, y, fb.var.xres, fb.var.yres, total_pages, pending(&books))
@@ -1126,7 +1150,6 @@ pub fn run() -> anyhow::Result<()> {
                                 &mut renderer,
                                 &mut cfg,
                                 &folders,
-                                &mut orient,
                                 &installed,
                             )?;
                             match exit {
@@ -1144,7 +1167,6 @@ pub fn run() -> anyhow::Result<()> {
                                         &mut renderer,
                                         &cfg.out_dir,
                                         &cfg.scan_dirs,
-                                        &mut orient,
                                     )?;
                                     log(format!("out folder: {}", picked.display()));
                                     cfg.out_dir = picked;
@@ -1224,21 +1246,31 @@ pub fn run() -> anyhow::Result<()> {
                 let _ = eink::screenshot::capture(&mut fb);
             }
 
-            InputEvent::Page(dir) => match dir {
-                PageButton::Next if page + 1 < total_pages => {
-                    page += 1;
+            InputEvent::Page(dir) => {
+                // `dir` carries the orientation standing before this read, and
+                // `Buttons::read_one` swaps prev/next on a flip — so a change
+                // drops the press rather than paging the wrong way.
+                if input.follow_orientation_now() {
+                    relayout!();
                     repaint!();
+                    continue;
                 }
-                PageButton::Prev if page > 0 => {
-                    page -= 1;
-                    repaint!();
+                match dir {
+                    PageButton::Next if page + 1 < total_pages => {
+                        page += 1;
+                        repaint!();
+                    }
+                    PageButton::Prev if page > 0 => {
+                        page -= 1;
+                        repaint!();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
 
             InputEvent::Tick => {
                 // The [`ARM_THRESHOLD`] deadline, or an idle poll carrying only
-                // an `Orientation` change.
+                // a rotation, a relayout or an `Expose`.
                 let fire = armed
                     .as_ref()
                     .is_some_and(|a| a.down_at.elapsed() >= ARM_THRESHOLD);
@@ -1305,16 +1337,18 @@ pub fn run() -> anyhow::Result<()> {
                     continue;
                 }
 
-                let o = Orientation::detect();
-                if o != orient {
-                    orient = o;
-                    input.set_orientation(o);
-                    layout = grid::Layout::compute(
-                        fb.var.xres,
-                        fb.var.yres,
-                        header::MARGIN,
-                        pager::STRIP_H,
-                    );
+                // Nothing else drains the X queue, so a relayout and an
+                // `Expose` are both noticed here. Either, and a rotation,
+                // rebuild the grid against the size now being drawn.
+                let pump = fb.pump_events();
+                let turned = input.follow_orientation();
+                if turned || pump.resized.is_some() {
+                    input.set_size(fb.var.xres, fb.var.yres);
+                    relayout!();
+                }
+                if turned || pump.resized.is_some() || pump.repaint {
+                    // The full repaint takes `grid::outline_cell` with it.
+                    armed = None;
                     repaint!();
                 }
             }

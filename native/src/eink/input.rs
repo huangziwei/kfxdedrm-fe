@@ -12,7 +12,7 @@
 //! mid-flight can't block the loop and starve the button fd.
 
 use std::os::fd::RawFd;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -20,19 +20,23 @@ use super::buttons::{Buttons, PageButton};
 use super::touch::{Touch, TouchEvent};
 use crate::orientation::Orientation;
 
-/// How long `next` blocks before surfacing a `Tick`. Bounds how quickly the
-/// main loop notices a device rotation (it re-reads the framework orientation
-/// on each `Tick`); only fires when idle, since real input returns first.
+/// How long `next` blocks before surfacing a `Tick`. Bounds how quickly a loop
+/// notices a device rotation (each `Tick` runs [`Input::follow_orientation`]);
+/// only fires when idle, since real input returns first.
 const TICK_MS: libc::c_int = 500;
+
+/// How long [`Input::follow_orientation`] leaves between `detect` reads. Each
+/// is a `lipc-get-prop` spawn, so it is not worth doing on every `Tick`.
+const ORIENT_POLL: Duration = Duration::from_millis(1000);
 
 /// A unified input event from either device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     Touch(TouchEvent),
     Page(PageButton),
-    /// Poll timed out with no input. The main loop re-checks the framework
-    /// orientation on this and repaints + re-orients touch/buttons if it
-    /// changed (the X server rotates the display; raw evdev coords don't).
+    /// Poll timed out with no input. A panel loop runs
+    /// [`Input::follow_orientation`] and `Framebuffer::pump_events` on this,
+    /// rebuilding its layout on a rotation or a relayout.
     Tick,
 }
 
@@ -41,20 +45,66 @@ pub struct Input {
     /// `None` when no page-button device was found/openable — the app runs
     /// touch-only and `poll` watches just the touchscreen.
     buttons: Option<Buttons>,
+    /// The orientation both devices are set to.
+    orientation: Orientation,
+    /// When `orientation` was read; `None` asks for a read at once.
+    checked: Option<Instant>,
 }
 
 impl Input {
     pub fn new(touch: Touch, buttons: Option<Buttons>) -> Self {
-        Self { touch, buttons }
+        Self {
+            touch,
+            buttons,
+            orientation: Orientation::Up,
+            checked: None,
+        }
     }
 
     /// Re-orient both devices after a detected rotation (the display is rotated
     /// by the X server; raw evdev coords/buttons are panel-fixed and need this).
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        self.orientation = orientation;
         self.touch.set_orientation(orientation);
         if let Some(buttons) = self.buttons.as_mut() {
             buttons.set_orientation(orientation);
         }
+    }
+
+    /// Re-reads [`Orientation::detect`] past [`ORIENT_POLL`] and applies a
+    /// change to both devices, answering whether one landed.
+    ///
+    /// This is the one place the framework orientation is read at runtime: a
+    /// loop that blocks without calling it keeps mapping touches to the frame
+    /// the panel was last drawn in. The `true` it answers is the caller's cue
+    /// to rebuild its layout and repaint.
+    pub fn follow_orientation(&mut self) -> bool {
+        if let Some(at) = self.checked
+            && at.elapsed() < ORIENT_POLL
+        {
+            return false;
+        }
+        self.checked = Some(Instant::now());
+        let seen = Orientation::detect();
+        if seen == self.orientation {
+            return false;
+        }
+        self.set_orientation(seen);
+        true
+    }
+
+    /// [`Input::follow_orientation`] with the [`ORIENT_POLL`] throttle skipped,
+    /// for the reads that must not run behind: a press whose coordinates are
+    /// about to be acted on.
+    pub fn follow_orientation_now(&mut self) -> bool {
+        self.checked = None;
+        self.follow_orientation()
+    }
+
+    /// [`Touch::set_size`] after a relayout. Nothing on the button device is
+    /// measured against the screen, so this reaches the touchscreen alone.
+    pub fn set_size(&mut self, fb_xres: u32, fb_yres: u32) {
+        self.touch.set_size(fb_xres, fb_yres);
     }
 
     /// Latest primary touch position, user-visible coords (see

@@ -223,6 +223,15 @@ impl Touch {
         self.orientation = orientation;
     }
 
+    /// Take the size being drawn, after `Framebuffer::pump_events` reports the
+    /// window was laid out at a new one. Left stale, an `Orientation::Down`
+    /// mirror lands off-screen and the screenshot corners sit in the wrong
+    /// place — both measured from these.
+    pub fn set_size(&mut self, fb_xres: u32, fb_yres: u32) {
+        self.fb_xres = fb_xres;
+        self.fb_yres = fb_yres;
+    }
+
     /// Drain currently-available events (non-blocking). Returns `Some` when a
     /// `Down`/`Up` boundary completes — (x, y) in user-visible framebuffer
     /// coords (orientation-corrected) — or `None` when the available data is

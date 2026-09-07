@@ -8,7 +8,6 @@ use crate::config::Config;
 use crate::eink::fb::{Framebuffer, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
-use crate::orientation::Orientation;
 use crate::scan::Candidate;
 use crate::ui::panel::{self, Chip, Item, Layout};
 use crate::ui::text::TextRenderer;
@@ -375,7 +374,6 @@ pub fn run(
     renderer: &mut TextRenderer,
     cfg: &mut Config,
     folders: &[Candidate],
-    orient: &mut Orientation,
     installed: &Installed,
 ) -> anyhow::Result<Exit> {
     let converter = installed.converter();
@@ -441,11 +439,15 @@ pub fn run(
                 let _ = crate::eink::screenshot::capture(fb);
             }
             InputEvent::Tick => {
-                let o = Orientation::detect();
-                if o != *orient {
-                    *orient = o;
-                    input.set_orientation(o);
+                // This loop blocks until the panel is dismissed, so it is the
+                // only place a rotation or a relayout is noticed while it is up.
+                let pump = fb.pump_events();
+                let turned = input.follow_orientation();
+                if turned || pump.resized.is_some() {
+                    input.set_size(fb.var.xres, fb.var.yres);
                     layout = layout_for(renderer, fb.var.yres, &p.items);
+                }
+                if turned || pump.resized.is_some() || pump.repaint {
                     repaint!();
                 }
             }

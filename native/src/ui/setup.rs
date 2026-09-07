@@ -211,6 +211,17 @@ pub fn run(
             InputEvent::Touch(TouchEvent::Screenshot) => {
                 let _ = crate::eink::screenshot::capture(fb);
             }
+            InputEvent::Tick => {
+                // This is the first screen the app draws and it blocks until
+                // answered, so a rotation here is followed nowhere else.
+                let pump = fb.pump_events();
+                if pump.resized.is_some() {
+                    input.set_size(fb.var.xres, fb.var.yres);
+                }
+                if input.follow_orientation() || pump.resized.is_some() || pump.repaint {
+                    draw(fb, renderer, reason)?;
+                }
+            }
             // `Input` holds the bezel keys grabbed; a press reaches no further.
             _ => {}
         }
