@@ -51,7 +51,7 @@ pub fn draw(fb: &mut Framebuffer, renderer: &mut TextRenderer, path: &str) {
     let x = fb_scale(fb).px(MARGIN_X);
     let w = field_w(xres);
     let cy = (fb_scale(fb).px(TOP) + fb_scale(fb).px(HEIGHT) / 2) as i32;
-    let baseline = (fb_scale(fb).px(TOP) + fb_scale(fb).px(HEIGHT) * 62 / 100) as i32;
+    let baseline = fb_scale(fb).px(TOP) as i32 + renderer.centred_baseline(fb_scale(fb).px(HEIGHT));
     let text_x = text_x(x, xres);
 
     grid::stroke_round_rect(

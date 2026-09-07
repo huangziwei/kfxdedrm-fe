@@ -92,6 +92,20 @@ impl TextRenderer {
         (face.height() + face.line_gap()).ceil().max(1.0) as u32
     }
 
+    /// The baseline that centres one line in a box `box_h` tall, as an offset
+    /// from the box's top.
+    ///
+    /// Ink runs from the ascent above the baseline to the descent below it, so
+    /// the baseline that balances the white is not the box's middle. The
+    /// metrics are the face's, not the string's: every label in a row keeps one
+    /// baseline whether or not it happens to carry a descender.
+    pub fn centred_baseline(&self, box_h: u32) -> i32 {
+        let face = self.chain.primary().as_scaled(self.px);
+        // `descent` is negative, so this is the ink's full height.
+        let (ascent, descent) = (face.ascent(), face.descent());
+        (((box_h as f32 - (ascent - descent)) / 2.0) + ascent).round() as i32
+    }
+
     /// Total advance width of `s` at the current px. Used by the overlay
     /// to center text inside the banner.
     ///

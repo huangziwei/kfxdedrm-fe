@@ -191,7 +191,6 @@ pub fn draw(
     let xres = fb.var.xres;
     let s = Scale::of_width(xres);
     let strip_y = strip::base(fb);
-    let baseline = strip::baseline(xres, strip_y);
     let z = Zones::compute(xres);
     let all_label = format!("[ Decrypt All ({pending}) ]");
     let counter = format!("{} / {}", page + 1, total_pages);
@@ -212,6 +211,9 @@ pub fn draw(
     );
 
     renderer.at_px(px, |r| {
+        // Inside `at_px`, so the metrics the baseline is centred on are the
+        // ones this size actually draws with.
+        let baseline = strip::baseline(xres, strip_y, r);
         strip::label(fb, r, 0, z.settings, baseline, EXIT, false);
         strip::label(
             fb,

@@ -21,8 +21,6 @@ pub const H: u32 = 80;
 pub const RULE: u32 = 2;
 /// Inset of a separator from the bar's top and bottom.
 const SEP_INSET: u32 = 12;
-/// A label's baseline, as a percentage of the bar height.
-const BASELINE_PCT: u32 = 70;
 
 /// [`H`] on a panel `fb_xres` wide.
 pub fn h(fb_xres: u32) -> u32 {
@@ -43,9 +41,12 @@ pub fn base(fb: &mut Framebuffer) -> u32 {
     top
 }
 
-/// The baseline every label on the bar sits on.
-pub fn baseline(fb_xres: u32, top: u32) -> i32 {
-    (top + h(fb_xres) * BASELINE_PCT / 100) as i32
+/// The baseline every label on the bar sits on: the one that leaves equal
+/// white above the ink and below it. [`TextRenderer::centred_baseline`] reads
+/// the size the renderer is set to, so a caller inside `at_px` gets that size's
+/// baseline.
+pub fn baseline(fb_xres: u32, top: u32, renderer: &TextRenderer) -> i32 {
+    top as i32 + renderer.centred_baseline(h(fb_xres))
 }
 
 /// A separator at `x`, dividing the slot left of it from the one right of it.
@@ -106,11 +107,16 @@ mod tests {
         assert_eq!(top(pw2, 1024) + h(pw2), 1024);
     }
 
-    /// The baseline sits inside the bar, below its middle.
+    /// A centred baseline leaves equal white above the ink and below it. The
+    /// metrics come from the face, so these stand in for one: an ascent of 26
+    /// over a descent of -6 is 32 of ink, which an 80-tall box seats at a
+    /// baseline of 50 with 24 either side.
     #[test]
-    fn a_label_sits_inside_the_bar() {
-        let top = top(XRES, YRES);
-        let b = baseline(XRES, top) as u32;
-        assert!(b > top + H / 2 && b < top + H, "baseline {b}");
+    fn a_centred_baseline_balances_the_white() {
+        let (box_h, ascent, descent) = (80.0f32, 26.0f32, -6.0f32);
+        let b = ((box_h - (ascent - descent)) / 2.0 + ascent).round();
+        assert_eq!(b, 50.0);
+        // What is left above the ink and below it, which is the point.
+        assert_eq!(b - ascent, box_h - (b - descent));
     }
 }

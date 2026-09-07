@@ -163,7 +163,7 @@ pub fn draw_download(
     let label = "Cancel";
     let lw = renderer.measure_width(label);
     let lx = cancel_x as i32 + ((fb_scale(fb).px(CANCEL_W) as i32 - lw as i32) / 2).max(0);
-    let lbaseline = (cancel_y + fb_scale(fb).px(CANCEL_H) * 66 / 100) as i32;
+    let lbaseline = cancel_y as i32 + renderer.centred_baseline(fb_scale(fb).px(CANCEL_H));
     renderer.draw(fb, lx, lbaseline, label, false);
 
     let banner_rect = MxcfbRect {
@@ -277,7 +277,7 @@ pub fn draw_progress_stop(
     renderer.draw(
         fb,
         lx,
-        (stop_y + fb_scale(fb).px(STOP_H) * 66 / 100) as i32,
+        stop_y as i32 + renderer.centred_baseline(fb_scale(fb).px(STOP_H)),
         label,
         false,
     );

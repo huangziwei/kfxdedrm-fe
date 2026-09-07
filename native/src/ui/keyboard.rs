@@ -289,7 +289,9 @@ fn draw_key(fb: &mut Framebuffer, renderer: &mut TextRenderer, kb: &KeyButton, p
     }
     let lw = renderer.measure_width(&kb.label);
     let tx = x + ((w as i32 - lw as i32) / 2).max(0);
-    let baseline = y + (h * 62 / 100) as i32;
+    // The baseline that leaves equal white above the ink and below it, so a
+    // key face and a bar slot seat their text alike.
+    let baseline = y + renderer.centred_baseline(h);
     renderer.draw(fb, tx, baseline, &kb.label, pressed);
 }
 

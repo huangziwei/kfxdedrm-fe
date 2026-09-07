@@ -590,7 +590,7 @@ fn draw_chip(fb: &mut Framebuffer, renderer: &mut TextRenderer, rect: MxcfbRect,
 fn draw_strip(fb: &mut Framebuffer, renderer: &mut TextRenderer) {
     let xres = fb.var.xres;
     let top = strip::base(fb);
-    let baseline = strip::baseline(xres, top);
+    let baseline = strip::baseline(xres, top, renderer);
     strip::label(fb, renderer, 0, xres, baseline, "[ Done ]", false);
 }
 
