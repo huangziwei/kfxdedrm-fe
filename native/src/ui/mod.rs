@@ -14,6 +14,7 @@ pub mod panel;
 pub mod pathbar;
 pub mod scale;
 pub mod setup;
+pub mod strip;
 pub mod text;
 pub mod toast;
 

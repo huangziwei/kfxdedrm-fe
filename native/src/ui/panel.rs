@@ -25,10 +25,11 @@ use crate::ui::text::TextRenderer;
 fn fb_scale(fb: &Framebuffer) -> Scale {
     Scale::of_width(fb.var.xres)
 }
+use crate::ui::strip;
 use crate::ui::{BLACK, QUIET, WHITE};
 
-/// Bottom action strip, matching `setup::BTN_H`.
-pub const STRIP_H: u32 = 120;
+/// Bottom action bar, from [`strip::H`].
+pub const STRIP_H: u32 = strip::H;
 /// Left inset for the title, the headings and the strip's label.
 pub const MARGIN_X: u32 = 60;
 /// Where a row's own label starts, inside the margin.
@@ -473,7 +474,7 @@ pub fn render(
     for i in 0..layout.drawable() {
         draw_item(fb, renderer, layout, items, i, column);
     }
-    draw_strip(fb, renderer, layout);
+    draw_strip(fb, renderer);
 }
 
 /// Redraw one row in place, for a chip that changed. The rest of the page is
@@ -586,15 +587,11 @@ fn draw_chip(fb: &mut Framebuffer, renderer: &mut TextRenderer, rect: MxcfbRect,
 }
 
 /// The full-width `[ Done ]` row under a 2px rule.
-fn draw_strip(fb: &mut Framebuffer, renderer: &mut TextRenderer, layout: &Layout) {
+fn draw_strip(fb: &mut Framebuffer, renderer: &mut TextRenderer) {
     let xres = fb.var.xres;
-    let top = layout.strip_top;
-    fb.fill_rect(top, 0, xres, 2, BLACK);
-    fb.fill_rect(top + 2, 0, xres, fb_scale(fb).px(STRIP_H) - 2, WHITE);
-
-    let label = "[ Done ]";
-    let baseline = (top + fb_scale(fb).px(STRIP_H) * 60 / 100) as i32;
-    renderer.draw(fb, fb_scale(fb).px(MARGIN_X) as i32, baseline, label, false);
+    let top = strip::base(fb);
+    let baseline = strip::baseline(xres, top);
+    strip::label(fb, renderer, 0, xres, baseline, "[ Done ]", false);
 }
 
 /// The whole panel, for a `WAVEFORM_MODE_GC16` refresh.

@@ -13,10 +13,12 @@ use crate::eink::fb::{Framebuffer, MxcfbRect, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
 use crate::engine::{self, Missing};
+use crate::ui::strip;
 use crate::ui::text::TextRenderer;
 
-/// Bottom button row, split into the two [`Choice`] zones.
-const BTN_H: u32 = 120;
+/// Bottom button row, split into the two [`Choice`] zones, on the shared
+/// [`crate::ui::strip`].
+const BTN_H: u32 = strip::H;
 /// Left inset, and the per-side margin bounding `wrap_and_clamp`.
 const MARGIN_X: u32 = 60;
 /// Indent for [`steps`].
@@ -31,8 +33,8 @@ pub enum Choice {
     Skip,
 }
 
-fn btn_top(yres: u32) -> u32 {
-    yres.saturating_sub(BTN_H)
+fn btn_top(xres: u32, yres: u32) -> u32 {
+    strip::top(xres, yres)
 }
 
 /// Where the two zones meet.
@@ -42,7 +44,7 @@ fn split(xres: u32) -> u32 {
 
 /// Which zone `(x, y)` fell in. Everything above the row is dead space.
 pub fn hit(x: u32, y: u32, xres: u32, yres: u32) -> Option<Choice> {
-    if y < btn_top(yres) {
+    if y < btn_top(xres, yres) {
         return None;
     }
     Some(if x < split(xres) {
@@ -180,21 +182,12 @@ fn offer() -> String {
 /// right, under a 2px rule and either side of a divider.
 fn draw_buttons(fb: &mut Framebuffer, renderer: &mut TextRenderer) {
     let xres = fb.var.xres;
-    let top = btn_top(fb.var.yres);
+    let top = strip::base(fb);
+    let baseline = strip::baseline(xres, top);
     let mid = split(xres);
-
-    fb.fill_rect(top, 0, xres, 2, 0x00);
-    fb.fill_rect(top + 2, 0, xres, BTN_H - 2, 0xFF);
-    fb.fill_rect(top + 12, mid - 1, 2, BTN_H - 24, 0x00);
-
-    let baseline = (top + BTN_H * 60 / 100) as i32;
-    let mut centered = |label: &str, from: u32, width: u32| {
-        let w = renderer.measure_width(label);
-        let x = from as i32 + ((width as i32 - w as i32) / 2).max(0);
-        renderer.draw(fb, x, baseline, label, false);
-    };
-    centered("[ Install ]", 0, mid);
-    centered("[ Skip ]", mid, xres - mid);
+    strip::separator(fb, mid);
+    strip::label(fb, renderer, 0, mid, baseline, "[ Install ]", false);
+    strip::label(fb, renderer, mid, xres - mid, baseline, "[ Skip ]", false);
 }
 
 /// [`draw`], then block on the bottom row.

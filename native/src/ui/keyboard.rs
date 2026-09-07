@@ -16,6 +16,7 @@ use crate::eink::touch::TouchEvent;
 use crate::ui::grid::outline_rect;
 use crate::ui::pathbar;
 use crate::ui::scale::Scale;
+use crate::ui::strip;
 use crate::ui::text::TextRenderer;
 
 /// Letter/digit rows, following a physical keyboard. Row 0 carries `Del` in a
@@ -30,15 +31,15 @@ const DIGIT_CELLS: i32 = 12;
 const GAP: i32 = 8;
 const MARGIN: i32 = 20;
 
-/// Bottom command strip: `[ Back ] | Shift | space | Clear | [ Done ]`. Height
-/// matches `ui/panel.rs`'s strip, and `[ Back ]` takes the leftmost slot the
-/// way `ui/pager.rs` gives that edge to `Exit`.
-const STRIP_H: u32 = 120;
+/// Bottom command bar: `[ Back ] | Shift | space | Clear | [ Done ]`, on the
+/// shared [`strip`]. `[ Back ]` takes the leftmost slot the way `ui/pager.rs`
+/// gives that edge to `[ Exit ]`.
+const STRIP_H: u32 = strip::H;
 const ZONE_W: u32 = 200;
 /// Slots in the strip, for the width [`layout`] leaves `space`.
 const ZONES: u32 = 5;
-/// Thickness of the strip's divider rules, matching the other bottom strips.
-const RULE: u32 = 2;
+/// Thickness of the bar's divider rules, from [`strip::RULE`].
+const RULE: u32 = strip::RULE;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Key {
@@ -292,24 +293,15 @@ fn draw_key(fb: &mut Framebuffer, renderer: &mut TextRenderer, kb: &KeyButton, p
     renderer.draw(fb, tx, baseline, &kb.label, pressed);
 }
 
-/// The strip's chrome: the rule above it and the slot separators, drawn the same
-/// way `ui/pager.rs` draws its own. [`face`] insets a slot past these, leaving
-/// them intact under a press.
+/// The bar's chrome: the rule above it and the slot separators, both through
+/// [`strip`] so every bar divides its slots identically. [`face`] insets a slot
+/// past these, leaving them intact under a press.
 fn draw_strip_chrome(fb: &mut Framebuffer, keys: &[KeyButton]) {
     let xres = fb.var.xres;
-    let s = Scale::of_width(xres);
     let top = strip_top(xres, fb.var.yres);
-    fb.fill_rect(top, 0, xres, s.px(RULE), 0x00);
-    for kb in keys.iter().filter(|k| k.style == Style::Zone) {
-        if kb.x > 0 {
-            fb.fill_rect(
-                top + s.px(12),
-                kb.x.max(0) as u32,
-                s.px(RULE),
-                s.px(STRIP_H).saturating_sub(s.px(24)),
-                0x00,
-            );
-        }
+    fb.fill_rect(top, 0, xres, Scale::of_width(xres).px(RULE), 0x00);
+    for kb in keys.iter().filter(|k| k.style == Style::Zone && k.x > 0) {
+        strip::separator(fb, kb.x.max(0) as u32);
     }
 }
 

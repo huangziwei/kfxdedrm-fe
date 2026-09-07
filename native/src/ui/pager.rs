@@ -1,10 +1,13 @@
-//! [`STRIP_H`] tall, along the bottom of the panel. Zones left to right:
+//! The grid's control bar, a [`crate::ui::strip`] along the bottom of the
+//! panel. Slots left to right:
 //!
-//! - `Exit`.
-//! - `Settings`.
-//! - `Decrypt All (N)`, live while `pending` is non-zero.
+//! - `[ Exit ]`.
+//! - `[ Settings ]`.
+//! - `[ Decrypt All (N) ]`, live while `pending` is non-zero.
 //! - `← Prev / N / Next →` across the remaining width, live while
 //!   `total_pages` exceeds 1. The only paging on a device with no bezel keys.
+//!   Paging is not an action on the page, so it takes no slot of its own and
+//!   no brackets.
 //!
 //! [`Zones`] places the four against the panel width and [`hit`] answers from
 //! the same placement [`draw`] draws at, which is what keeps a label and the
@@ -13,20 +16,12 @@
 
 use crate::eink::fb::Framebuffer;
 use crate::ui::scale::Scale;
+use crate::ui::strip;
 use crate::ui::text::TextRenderer;
 
-/// Strip height, a design pixel.
-const STRIP_H: u32 = 80;
-/// The rule along the top of the strip.
-const RULE_H: u32 = 2;
-/// Inset of a separator from the top and bottom of the strip.
-const SEP_INSET: u32 = 12;
-/// A separator's thickness.
-const SEP_W: u32 = 2;
-
-/// Strip height on a panel `fb_xres` wide.
+/// Bar height on a panel `fb_xres` wide, from [`strip::H`].
 pub fn strip_h(fb_xres: u32) -> u32 {
-    Scale::of_width(fb_xres).px(STRIP_H)
+    strip::h(fb_xres)
 }
 
 const EXIT_ZONE_W: u32 = 180;
@@ -47,7 +42,14 @@ const FIXED_MIN_W: u32 = 300;
 /// Text inset from a zone's left edge, on a zone wide enough for it.
 const LABEL_INSET: u32 = 32;
 
-/// Label sizes the strip drops through, largest first, until every label fits
+/// The slot labels. An action is bracketed; paging only moves through the
+/// pages it reports and is not.
+const EXIT: &str = "[ Exit ]";
+const SETTINGS: &str = "[ Settings ]";
+const PREV: &str = "← Prev";
+const NEXT: &str = "Next →";
+
+/// Label sizes the bar drops through, largest first, until every label fits
 /// the zone it is drawn in.
 const LABEL_PX: &[f32] = &[32.0, 28.0, 24.0, 20.0, 17.0];
 
@@ -123,7 +125,7 @@ pub fn n_pages(books: usize, page_size: usize) -> usize {
 }
 
 pub fn strip_top(fb_xres: u32, fb_yres: u32) -> u32 {
-    fb_yres.saturating_sub(strip_h(fb_xres))
+    strip::top(fb_xres, fb_yres)
 }
 
 /// The zone at `(tx, ty)`. Integer geometry, no framebuffer.
@@ -188,53 +190,46 @@ pub fn draw(
 ) {
     let xres = fb.var.xres;
     let s = Scale::of_width(xres);
-    let strip_h = s.px(STRIP_H);
-    let rule_h = s.px(RULE_H);
-    let strip_y = strip_top(xres, fb.var.yres);
-    // A black divider along the top, white strip body below.
-    fb.fill_rect(strip_y, 0, xres, rule_h, 0x00);
-    fb.fill_rect(strip_y + rule_h, 0, xres, strip_h - rule_h, 0xFF);
-
-    let baseline = (strip_y + strip_h * 70 / 100) as i32;
+    let strip_y = strip::base(fb);
+    let baseline = strip::baseline(xres, strip_y);
     let z = Zones::compute(xres);
-    let all_label = format!("Decrypt All ({pending})");
+    let all_label = format!("[ Decrypt All ({pending}) ]");
     let counter = format!("{} / {}", page + 1, total_pages);
 
-    // One size for the strip, so every label sits on the same baseline at the
+    // One size for the bar, so every label sits on the same baseline at the
     // same weight. The nav labels share their region, hence the halves.
     let nav_half = Zones::width(z.nav, xres) / 2;
     let px = label_px(
         renderer,
         &[
-            ("Exit", Zones::width(0, z.settings)),
-            ("Settings", Zones::width(z.settings, z.all)),
+            (EXIT, Zones::width(0, z.settings)),
+            (SETTINGS, Zones::width(z.settings, z.all)),
             (&all_label, Zones::width(z.all, z.nav)),
-            ("← Prev", nav_half),
-            ("Next →", nav_half),
+            (PREV, nav_half),
+            (NEXT, nav_half),
         ],
         s,
     );
 
     renderer.at_px(px, |r| {
-        let exit_w = Zones::width(0, z.settings);
-        r.draw(fb, inset_for(exit_w, s) as i32, baseline, "Exit", false);
-
-        let settings_w = Zones::width(z.settings, z.all);
-        r.draw(
+        strip::label(fb, r, 0, z.settings, baseline, EXIT, false);
+        strip::label(
             fb,
-            (z.settings + inset_for(settings_w, s)) as i32,
+            r,
+            z.settings,
+            Zones::width(z.settings, z.all),
             baseline,
-            "Settings",
+            SETTINGS,
             false,
         );
-
         // `TextRenderer::draw` has black and white and no grey to dim a label
         // with, and [`hit`] returns `None` at `pending == 0`.
-        let all_w = Zones::width(z.all, z.nav);
         if pending > 0 {
-            r.draw(
+            strip::label(
                 fb,
-                (z.all + inset_for(all_w, s)) as i32,
+                r,
+                z.all,
+                Zones::width(z.all, z.nav),
                 baseline,
                 &all_label,
                 false,
@@ -244,25 +239,25 @@ pub fn draw(
         if total_pages <= 1 {
             return;
         }
+        // Paging keeps the open region the slots do not divide: each label sits
+        // inside the half `hit` answers for it, a `Next` drawn left of
+        // `nav_mid` reading as `Prev` under the finger.
         let inset = inset_for(nav_half, s);
-        // Each label appears while that direction exists, anchored inside the
-        // half `hit` answers for it — a `Next` drawn left of `nav_mid` reads as
-        // `Prev` under the finger.
         if page > 0 {
-            r.draw(fb, (z.nav + inset) as i32, baseline, "← Prev", false);
+            r.draw(fb, (z.nav + inset) as i32, baseline, PREV, false);
         }
-        let next_w = r.measure_width("Next →");
+        let next_w = r.measure_width(NEXT);
         let next_x = xres
             .saturating_sub(inset)
             .saturating_sub(next_w)
             .max(z.nav_mid + inset);
         if page + 1 < total_pages {
-            r.draw(fb, next_x as i32, baseline, "Next →", false);
+            r.draw(fb, next_x as i32, baseline, NEXT, false);
         }
         // Centred in the nav region, and dropped where either label reaches it.
         let counter_w = r.measure_width(&counter);
         let counter_x = z.nav + Zones::width(z.nav, xres) / 2 - counter_w / 2;
-        let clear_left = page == 0 || counter_x > z.nav + inset + r.measure_width("← Prev");
+        let clear_left = page == 0 || counter_x > z.nav + inset + r.measure_width(PREV);
         let clear_right = page + 1 >= total_pages || counter_x + counter_w < next_x;
         if clear_left && clear_right {
             r.draw(fb, counter_x as i32, baseline, &counter, false);
@@ -276,22 +271,13 @@ pub fn draw(
     // compartment behind: with nothing to decrypt there is no `Decrypt All`
     // label, and a bar on either side of the gap would read as a button that
     // lost its text.
-    let sep_inset = s.px(SEP_INSET);
-    let sep_w = s.px(SEP_W);
-    let edges = [
+    for (edge, live) in [
         (z.settings, true),
         (z.all, pending > 0),
         (z.nav, total_pages > 1),
-    ];
-    for (edge, live) in edges {
-        if live && edge >= sep_w && edge < xres {
-            fb.fill_rect(
-                strip_y + sep_inset,
-                edge - sep_w,
-                sep_w,
-                strip_h.saturating_sub(sep_inset * 2),
-                0x00,
-            );
+    ] {
+        if live {
+            strip::separator(fb, edge);
         }
     }
 }
@@ -306,7 +292,7 @@ mod tests {
 
     /// A tap at `x`, vertically centered in the strip.
     fn tap(x: u32, pages: usize, pending: usize) -> Option<PagerHit> {
-        hit(x, YRES - STRIP_H / 2, XRES, YRES, pages, pending)
+        hit(x, YRES - strip_h(XRES) / 2, XRES, YRES, pages, pending)
     }
 
     /// Every panel width a shipped device's X server reports.
@@ -350,7 +336,7 @@ mod tests {
         for xres in PANELS {
             let z = Zones::compute(*xres);
             let s = Scale::of_width(*xres);
-            let at = |x: u32| hit(x, YRES - s.px(STRIP_H) / 2, *xres, YRES, 3, 3);
+            let at = |x: u32| hit(x, YRES - strip_h(*xres) / 2, *xres, YRES, 3, 3);
             assert_eq!(at(0), Some(PagerHit::Exit), "exit at {xres}");
             assert_eq!(
                 at(z.settings),
