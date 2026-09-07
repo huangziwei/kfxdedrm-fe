@@ -4,10 +4,14 @@
 //! `toolbar:paged`. `--list` names them all, `--panel` picks the panel sizes,
 //! and each shot is written once per panel.
 //!
+//! `--before` draws the grid screens through [`before`], the geometry of
+//! `551528c`, so a shot has something to be read against.
+//!
 //! Drawing needs the device's faces, which a host does not have. Point
 //! `KFXDEDRM_FONTS` at a directory holding them — a copy of the Kindle's
 //! `/usr/java/lib/fonts` is what the shots are meant to look like.
 
+mod before;
 mod fixture;
 
 use std::path::PathBuf;
@@ -17,10 +21,12 @@ use anyhow::{Context, Result, bail};
 use kfxdedrm_fe_native::app;
 use kfxdedrm_fe_native::eink::fb::Framebuffer;
 use kfxdedrm_fe_native::engine::Missing;
+use kfxdedrm_fe_native::ui::scale::Scale;
 use kfxdedrm_fe_native::ui::text::TextRenderer;
-use kfxdedrm_fe_native::ui::{configmenu, grid, header, keyboard, pager, setup, toast};
+use kfxdedrm_fe_native::ui::{configmenu, grid, keyboard, pager, setup, toast};
 
-/// The size every screen is drawn at, and the body size `app::run` loads.
+/// `app::FONT_PX`: the body size as a design pixel, which `ui::scale` maps to
+/// each panel the way the app does.
 const FONT_PX: f32 = 32.0;
 
 /// Where the PNGs land under `--out`.
@@ -67,8 +73,9 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         eprintln!(
-            "preview [--shot NAME]... [--panel NAME]... [--out DIR] [--list]\n\
+            "preview [--shot NAME]... [--panel NAME]... [--out DIR] [--before] [--list]\n\
              \n\
+             --before draws the grid screens as they shipped at 551528c\n\
              panels: {}\n\
              fonts:  KFXDEDRM_FONTS=/path/to/kindle/fonts",
             PANELS
@@ -80,6 +87,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let before = args.iter().any(|a| a == "--before");
     let out = PathBuf::from(valued(&args, "--out").unwrap_or_else(|| OUT.to_string()));
     let shots = chosen(&args, "--shot", SHOTS)?;
     let names = chosen(
@@ -92,19 +100,41 @@ fn main() -> Result<()> {
         .filter(|(n, ..)| names.iter().any(|w| w == n))
         .collect();
 
-    // `TextRenderer::load` reads the faces `font::discover` finds, which off a
-    // Kindle is whatever `KFXDEDRM_FONTS` points at.
-    let mut renderer = TextRenderer::load(FONT_PX)
-        .context("no font — point KFXDEDRM_FONTS at a copy of the device's /usr/java/lib/fonts")?;
-    eprintln!("fonts: {}", renderer.chain_description());
-
     std::fs::create_dir_all(&out).with_context(|| format!("create {}", out.display()))?;
     let mut written = 0usize;
+    let mut named = false;
     for (panel, xres, yres) in panels {
+        // The body size is physical, so a panel of another density needs the
+        // faces read again at its own size.
+        let px = match before {
+            true => before::FONT_PX,
+            false => Scale::of_width(*xres).font(FONT_PX),
+        };
+        let mut renderer = TextRenderer::load(px).context(
+            "no font — point KFXDEDRM_FONTS at a copy of the device's /usr/java/lib/fonts",
+        )?;
+        if !named {
+            eprintln!("fonts: {}", renderer.chain_description());
+            named = true;
+        }
+        eprintln!(
+            "{panel}: {xres}x{yres} at {} dpi, body {px:.1}px",
+            Scale::of_width(*xres).dpi()
+        );
         for shot in &shots {
+            // `--before` only reaches the grid screens; the rest have no
+            // shipped twin to stand against.
+            if before && !shot.starts_with("grid:") && !shot.starts_with("toolbar:") {
+                continue;
+            }
             let mut fb = Framebuffer::offscreen(*xres, *yres);
-            render(&mut fb, &mut renderer, shot)?;
-            let path = out.join(format!("{}-{panel}.png", shot.replace(':', "-")));
+            render(&mut fb, &mut renderer, shot, before)?;
+            let stem = shot.replace(':', "-");
+            let prefix = match before {
+                true => "before-",
+                false => "",
+            };
+            let path = out.join(format!("{prefix}{stem}-{panel}.png"));
             fb.capture_png(&path)
                 .with_context(|| format!("write {}", path.display()))?;
             println!("{}", path.display());
@@ -145,34 +175,39 @@ fn chosen(args: &[String], flag: &str, all: &[&str]) -> Result<Vec<String>> {
 
 /// One shot into `fb`. Every arm paints the whole panel, so the caller hands
 /// each a surface of its own.
-fn render(fb: &mut Framebuffer, renderer: &mut TextRenderer, shot: &str) -> Result<()> {
+fn render(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    shot: &str,
+    before: bool,
+) -> Result<()> {
     match shot {
         "grid:full" => {
             let books = fixture::books(11, false);
-            grid_page(fb, renderer, &books, 0);
+            grid_page(fb, renderer, &books, 0, before);
         }
         "grid:one-page" => {
             let books = fixture::books(3, false);
-            grid_page(fb, renderer, &books, 0);
+            grid_page(fb, renderer, &books, 0, before);
         }
-        "grid:empty" => grid_page(fb, renderer, &[], 0),
+        "grid:empty" => grid_page(fb, renderer, &[], 0, before),
         "grid:all-done" => {
             let books = fixture::books(6, true);
-            grid_page(fb, renderer, &books, 0);
+            grid_page(fb, renderer, &books, 0, before);
         }
 
         // The toolbar over a drawn grid, which is how it is ever seen.
         "toolbar:paged" => {
             let books = fixture::books(30, false);
-            grid_page(fb, renderer, &books, 1);
+            grid_page(fb, renderer, &books, 1, before);
         }
         "toolbar:one-page" => {
             let books = fixture::books(4, false);
-            grid_page(fb, renderer, &books, 0);
+            grid_page(fb, renderer, &books, 0, before);
         }
         "toolbar:nothing-pending" => {
             let books = fixture::books(4, true);
-            grid_page(fb, renderer, &books, 0);
+            grid_page(fb, renderer, &books, 0, before);
         }
 
         "settings" => {
@@ -209,19 +244,19 @@ fn render(fb: &mut Framebuffer, renderer: &mut TextRenderer, shot: &str) -> Resu
         // A banner reads against the screen it covers, so the grid goes down
         // first.
         "toast:hint" => {
-            grid_page(fb, renderer, &fixture::books(6, false), 0);
+            grid_page(fb, renderer, &fixture::books(6, false), 0, before);
             toast::draw(fb, renderer, "Hold to decrypt");
         }
         "toast:progress" => {
-            grid_page(fb, renderer, &fixture::books(6, false), 0);
+            grid_page(fb, renderer, &fixture::books(6, false), 0, before);
             toast::draw_progress(fb, renderer, "The Left Hand of Darkness", 2, 6);
         }
         "toast:progress-stop" => {
-            grid_page(fb, renderer, &fixture::books(6, false), 0);
+            grid_page(fb, renderer, &fixture::books(6, false), 0, before);
             toast::draw_progress_stop(fb, renderer, "The Left Hand of Darkness", 2, 6);
         }
         "toast:done" => {
-            grid_page(fb, renderer, &fixture::books(6, false), 0);
+            grid_page(fb, renderer, &fixture::books(6, false), 0, before);
             toast::draw_download_done(fb, renderer, "Decrypted 6");
         }
 
@@ -237,8 +272,13 @@ fn grid_page(
     renderer: &mut TextRenderer,
     books: &[kfxdedrm_fe_native::scan::Book],
     page: usize,
+    before: bool,
 ) {
-    let layout = grid::Layout::compute(fb.var.xres, fb.var.yres, header::MARGIN, pager::STRIP_H);
+    if before {
+        before::draw_page(fb, renderer, books, page);
+        return;
+    }
+    let layout = grid::Layout::compute(fb.var.xres, fb.var.yres);
     let covers = vec![None; books.len()];
     let total = pager::n_pages(books.len(), layout.page_size());
     app::draw_page(

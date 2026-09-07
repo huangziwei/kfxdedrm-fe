@@ -15,6 +15,7 @@ use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
 use crate::ui::grid::outline_rect;
 use crate::ui::pathbar;
+use crate::ui::scale::Scale;
 use crate::ui::text::TextRenderer;
 
 /// Letter/digit rows, following a physical keyboard. Row 0 carries `Del` in a
@@ -88,31 +89,34 @@ struct KeyButton {
 
 /// Bottom of the top band: the path field and the verdict line under it. A
 /// keystroke refreshes only `[0, band_bottom]`, leaving the keyboard untouched.
-fn band_bottom(lh: u32) -> u32 {
-    pathbar::TOP + pathbar::HEIGHT + lh + 24
+fn band_bottom(xres: u32, lh: u32) -> u32 {
+    pathbar::height(xres) + lh + Scale::of_width(xres).px(24)
 }
 
-fn strip_top(yres: u32) -> u32 {
-    yres.saturating_sub(STRIP_H)
+fn strip_top(xres: u32, yres: u32) -> u32 {
+    yres.saturating_sub(Scale::of_width(xres).px(STRIP_H))
 }
 
 /// Keyboard metrics `(unit, unit_digits, key_h, keys_top)`. Letter rows divide
 /// the span into ten columns, the digit row into [`DIGIT_CELLS`]. Key faces are
 /// square, and the four-row block anchors above the command strip.
 fn metrics(xres: u32, yres: u32) -> (i32, i32, i32, i32) {
-    let span = (xres as i32 - 2 * MARGIN).max(1);
+    let s = Scale::of_width(xres);
+    let (gap, margin) = (s.i(GAP), s.i(MARGIN));
+    let span = (xres as i32 - 2 * margin).max(1);
     let unit = (span / 10).max(1);
     let unit_digits = (span / DIGIT_CELLS).max(1);
-    let key_h = (unit - GAP).max(1);
-    let block_h = 4 * key_h + 3 * GAP;
-    let keys_top = (yres as i32 - STRIP_H as i32 - MARGIN - block_h).max(MARGIN);
+    let key_h = (unit - gap).max(1);
+    let block_h = 4 * key_h + 3 * gap;
+    let keys_top = (yres as i32 - s.px(STRIP_H) as i32 - margin - block_h).max(margin);
     (unit, unit_digits, key_h, keys_top)
 }
 
 /// Lay out every key: the four letter/digit rows, then the five strip slots.
 fn layout(xres: u32, yres: u32) -> Vec<KeyButton> {
+    let s = Scale::of_width(xres);
     let (unit, unit_digits, key_h, top) = metrics(xres, yres);
-    let stride = key_h + GAP;
+    let stride = key_h + s.i(GAP);
     let mut out = Vec::new();
 
     for (r, row) in ROWS.iter().enumerate() {
@@ -148,7 +152,7 @@ fn layout(xres: u32, yres: u32) -> Vec<KeyButton> {
 
     // `[ Back ]` takes the leftmost slot, the one `crate::ui::pager` gives
     // `Exit`. `[ Done ]` sits far right, the wide `space` in the middle.
-    let sy = strip_top(yres) as i32;
+    let sy = strip_top(xres, yres) as i32;
     let side = ZONE_W.min(xres / ZONES);
     for (x, w, key, label) in [
         (0, side, Key::Back, "[ Back ]"),
@@ -200,7 +204,7 @@ fn band_rect(fb: &Framebuffer, lh: u32) -> MxcfbRect {
         top: 0,
         left: 0,
         width: fb.var.xres,
-        height: band_bottom(lh),
+        height: band_bottom(fb.var.xres, lh),
     }
 }
 
@@ -292,7 +296,7 @@ fn draw_key(fb: &mut Framebuffer, renderer: &mut TextRenderer, kb: &KeyButton, p
 /// them intact under a press.
 fn draw_strip_chrome(fb: &mut Framebuffer, keys: &[KeyButton]) {
     let xres = fb.var.xres;
-    let top = strip_top(fb.var.yres);
+    let top = strip_top(fb.var.xres, fb.var.yres);
     fb.fill_rect(top, 0, xres, RULE, 0x00);
     for kb in keys.iter().filter(|k| k.style == Style::Zone) {
         if kb.x > 0 {
@@ -369,7 +373,7 @@ pub fn run(
     // Refresh just the path+verdict band after a keystroke (fast DU, no flash).
     macro_rules! refresh_band {
         () => {{
-            fb.fill_rect(0, 0, fb.var.xres, band_bottom(lh), 0xFF);
+            fb.fill_rect(0, 0, fb.var.xres, band_bottom(fb.var.xres, lh), 0xFF);
             draw_band(fb, renderer, &path, scan_dirs, lh);
             fb.send_update(band_rect(fb, lh), WAVEFORM_MODE_DU)?;
         }};

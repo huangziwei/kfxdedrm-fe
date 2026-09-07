@@ -5,18 +5,25 @@
 use std::path::Path;
 
 use crate::eink::fb::Framebuffer;
+use crate::ui::scale::Scale;
 use crate::ui::text::TextRenderer;
 
 /// Gap above the band.
-pub const TOP: u32 = 16;
+const TOP: u32 = 16;
 /// Band height, including the bottom rule.
-pub const HEIGHT: u32 = 88;
+const HEIGHT: u32 = 88;
 /// Gap below the band.
-pub const BOTTOM_GAP: u32 = 16;
-/// Headroom `grid::Layout::compute` receives.
-pub const MARGIN: u32 = TOP + HEIGHT + BOTTOM_GAP;
+const BOTTOM_GAP: u32 = 16;
 
 const MARGIN_X: u32 = 40;
+/// The bottom rule's thickness.
+const RULE_H: u32 = 2;
+
+/// Headroom `grid::Layout::compute` receives, on a panel `fb_xres` wide.
+pub fn margin(fb_xres: u32) -> u32 {
+    let s = Scale::of_width(fb_xres);
+    s.px(TOP) + s.px(HEIGHT) + s.px(BOTTOM_GAP)
+}
 
 /// `pending` and `total` as a phrase. `pending` is what `app::decrypt_all`
 /// acts on.
@@ -39,12 +46,14 @@ pub fn draw(
     out_dir: &Path,
 ) {
     let xres = fb.var.xres;
-    fb.fill_rect(TOP, 0, xres, HEIGHT, 0xFF);
+    let s = Scale::of_width(xres);
+    let (top, height, margin_x) = (s.px(TOP), s.px(HEIGHT), s.px(MARGIN_X));
+    fb.fill_rect(top, 0, xres, height, 0xFF);
 
-    let baseline = (TOP + HEIGHT * 55 / 100) as i32;
+    let baseline = (top + height * 55 / 100) as i32;
     renderer.draw(
         fb,
-        MARGIN_X as i32,
+        margin_x as i32,
         baseline,
         &count_label(pending, total),
         false,
@@ -53,10 +62,17 @@ pub fn draw(
     // Right-aligned, and the only place the destination is named.
     let dest = format!("→ {}", out_dir.display());
     let w = renderer.measure_width(&dest);
-    let x = (xres.saturating_sub(MARGIN_X) as i32 - w as i32).max(MARGIN_X as i32);
+    let x = (xres.saturating_sub(margin_x) as i32 - w as i32).max(margin_x as i32);
     renderer.draw(fb, x, baseline, &dest, false);
 
-    fb.fill_rect(TOP + HEIGHT - 2, MARGIN_X, xres - MARGIN_X * 2, 2, 0x00);
+    let rule_h = s.px(RULE_H);
+    fb.fill_rect(
+        top + height - rule_h,
+        margin_x,
+        xres.saturating_sub(margin_x * 2),
+        rule_h,
+        0x00,
+    );
 }
 
 #[cfg(test)]

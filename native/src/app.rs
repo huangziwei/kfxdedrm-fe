@@ -32,6 +32,7 @@ const BUNDLE_DIR: &str = selfupdate::EXTENSION_DIR;
 /// `launch.sh` appends this process's stderr here.
 const LOG_PATH: &str = "/mnt/us/logs/kfxdedrm-fe.log";
 
+/// Body size as a design pixel; `ui::scale` maps it to the panel's density.
 const FONT_PX: f32 = 32.0;
 
 /// Hold on a cover, within [`ARM_SLOP_PX`] of the landing point, that runs
@@ -71,12 +72,12 @@ fn full_rect(fb: &Framebuffer) -> MxcfbRect {
 }
 
 /// Refresh rect for one grid cell.
-fn cell_rect(cell_x: i32, cell_y: i32, cell_h: u32) -> MxcfbRect {
+fn cell_rect(cell_x: i32, cell_y: i32, layout: grid::Layout) -> MxcfbRect {
     MxcfbRect {
         top: cell_y.max(0) as u32,
         left: cell_x.max(0) as u32,
-        width: grid::CELL_W,
-        height: cell_h,
+        width: layout.cell_w,
+        height: layout.cell_h,
     }
 }
 
@@ -115,10 +116,10 @@ fn pending(books: &[Book]) -> usize {
 }
 
 /// `Book::cover_path` decoded for the grid. `None` leaves a placeholder.
-fn load_cover(book: &Book) -> Option<DynamicImage> {
+fn load_cover(book: &Book, layout: grid::Layout) -> Option<DynamicImage> {
     let path = book.cover_path.as_deref()?;
     let bytes = std::fs::read(path).ok()?;
-    match grid::decode_resize(&bytes) {
+    match grid::decode_resize(&bytes, layout) {
         Ok(img) => Some(img),
         Err(e) => {
             log(format!("cover {}: {e}", path.display()));
@@ -155,7 +156,7 @@ pub fn draw_page(
             renderer,
             cx,
             cy,
-            layout.cell_h,
+            layout,
             covers.get(start + slot).and_then(|c| c.as_ref()),
             label_of(book),
         );
@@ -220,7 +221,7 @@ fn fill_covers(
         if covers[idx].is_some() || books[idx].cover_path.is_none() {
             continue;
         }
-        let Some(img) = load_cover(&books[idx]) else {
+        let Some(img) = load_cover(&books[idx], layout) else {
             continue;
         };
         covers[idx] = Some(img);
@@ -234,14 +235,14 @@ fn fill_covers(
             renderer,
             cx,
             cy,
-            layout.cell_h,
+            layout,
             covers[idx].as_ref(),
             label_of(&books[idx]),
         );
         if books[idx].done {
             grid::draw_downloaded_badge(fb, rect);
         }
-        fb.send_update(cell_rect(cx, cy, layout.cell_h), WAVEFORM_MODE_DU)?;
+        fb.send_update(cell_rect(cx, cy, layout), WAVEFORM_MODE_DU)?;
     }
     Ok(())
 }
@@ -970,12 +971,22 @@ pub fn run() -> anyhow::Result<()> {
     // ---- Device setup ------------------------------------------------------
     // `ui::setup` draws and takes taps: `Framebuffer` and `Input` precede
     // `engine::locate`, and `Buttons::open` grabs the bezel keys.
-    let mut renderer = TextRenderer::load(FONT_PX)?;
-    log(format!("fonts: {}", renderer.chain_description()));
-
     // `Input::follow_orientation` carries it from here.
     let orient = Orientation::detect();
     let mut fb = Framebuffer::open()?;
+
+    // The body size is physical, so the panel has to be open before the faces
+    // are read at it.
+    let s = crate::ui::scale::Scale::of_width(fb.var.xres);
+    log(format!(
+        "panel: {}x{} at {} dpi",
+        fb.var.xres,
+        fb.var.yres,
+        s.dpi()
+    ));
+    let mut renderer = TextRenderer::load(s.font(FONT_PX))?;
+    log(format!("fonts: {}", renderer.chain_description()));
+
     let touch = Touch::open(orient, fb.var.xres, fb.var.yres)?;
     let buttons = match Buttons::open() {
         Ok(Some(b)) => {
@@ -1036,8 +1047,7 @@ pub fn run() -> anyhow::Result<()> {
     if fb.pump_events().resized.is_some() {
         input.set_size(fb.var.xres, fb.var.yres);
     }
-    let mut layout =
-        grid::Layout::compute(fb.var.xres, fb.var.yres, header::MARGIN, pager::STRIP_H);
+    let mut layout = grid::Layout::compute(fb.var.xres, fb.var.yres);
     let mut page = 0usize;
     // `repaint!` computes this from `books` and `layout` before any read.
     let mut total_pages;
@@ -1046,8 +1056,7 @@ pub fn run() -> anyhow::Result<()> {
     // land here.
     macro_rules! relayout {
         () => {{
-            layout =
-                grid::Layout::compute(fb.var.xres, fb.var.yres, header::MARGIN, pager::STRIP_H);
+            layout = grid::Layout::compute(fb.var.xres, fb.var.yres);
         }};
     }
 
@@ -1096,14 +1105,14 @@ pub fn run() -> anyhow::Result<()> {
                     &mut renderer,
                     cx,
                     cy,
-                    layout.cell_h,
+                    layout,
                     covers[idx].as_ref(),
                     label_of(&books[idx]),
                 );
                 if books[idx].done {
                     grid::draw_downloaded_badge(&mut fb, rect);
                 }
-                fb.send_update(cell_rect(cx, cy, layout.cell_h), WAVEFORM_MODE_DU)?;
+                fb.send_update(cell_rect(cx, cy, layout), WAVEFORM_MODE_DU)?;
             }
         }};
     }
@@ -1137,8 +1146,8 @@ pub fn run() -> anyhow::Result<()> {
                     let idx = page * layout.page_size() + slot;
                     let (cx, cy) = layout.cell_xy(slot);
                     if idx < books.len() && cx >= 0 && cy >= 0 {
-                        grid::outline_cell(&mut fb, cx, cy, layout.cell_h);
-                        fb.send_update(cell_rect(cx, cy, layout.cell_h), WAVEFORM_MODE_DU)?;
+                        grid::outline_cell(&mut fb, cx, cy, layout);
+                        fb.send_update(cell_rect(cx, cy, layout), WAVEFORM_MODE_DU)?;
                         armed = Some(Armed {
                             slot,
                             idx,
@@ -1349,8 +1358,8 @@ pub fn run() -> anyhow::Result<()> {
                     // banner.
                     let (cx, cy) = layout.cell_xy(a.slot);
                     if cx >= 0 && cy >= 0 {
-                        grid::draw_arm_cue(&mut fb, cx, cy, layout.cell_h);
-                        fb.send_update(cell_rect(cx, cy, layout.cell_h), WAVEFORM_MODE_DU)?;
+                        grid::draw_arm_cue(&mut fb, cx, cy, layout);
+                        fb.send_update(cell_rect(cx, cy, layout), WAVEFORM_MODE_DU)?;
                         hold(&mut fb, &mut input, ARM_DWELL)?;
                     }
                     // `armed` is taken, leaving the eventual lift inert.

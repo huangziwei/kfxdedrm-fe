@@ -12,9 +12,22 @@
 //! text, to pick the one [`LABEL_PX`] every label fits its zone at.
 
 use crate::eink::fb::Framebuffer;
+use crate::ui::scale::Scale;
 use crate::ui::text::TextRenderer;
 
-pub const STRIP_H: u32 = 80;
+/// Strip height, a design pixel.
+const STRIP_H: u32 = 80;
+/// The rule along the top of the strip.
+const RULE_H: u32 = 2;
+/// Inset of a separator from the top and bottom of the strip.
+const SEP_INSET: u32 = 12;
+/// A separator's thickness.
+const SEP_W: u32 = 2;
+
+/// Strip height on a panel `fb_xres` wide.
+pub fn strip_h(fb_xres: u32) -> u32 {
+    Scale::of_width(fb_xres).px(STRIP_H)
+}
 
 const EXIT_ZONE_W: u32 = 180;
 /// Right of [`EXIT_ZONE_W`].
@@ -61,14 +74,18 @@ pub struct Zones {
 
 impl Zones {
     pub fn compute(fb_xres: u32) -> Self {
+        let s = Scale::of_width(fb_xres);
+        let (exit_w, settings_w, all_w) =
+            (s.px(EXIT_ZONE_W), s.px(SETTINGS_ZONE_W), s.px(ALL_ZONE_W));
+        let fixed_w = exit_w + settings_w + all_w;
         let room = fb_xres
-            .saturating_sub(NAV_MIN_W)
-            .clamp(FIXED_MIN_W, FIXED_W);
-        let settings = EXIT_ZONE_W * room / FIXED_W;
-        let all = settings + SETTINGS_ZONE_W * room / FIXED_W;
+            .saturating_sub(s.px(NAV_MIN_W))
+            .clamp(s.px(FIXED_MIN_W).min(fixed_w), fixed_w);
+        let settings = exit_w * room / fixed_w;
+        let all = settings + settings_w * room / fixed_w;
         // `min`: a panel narrower than [`FIXED_MIN_W`] plus [`NAV_MIN_W`] has
         // no nav region, and `hit` answers `None` past the named zones.
-        let nav = (all + ALL_ZONE_W * room / FIXED_W).min(fb_xres);
+        let nav = (all + all_w * room / fixed_w).min(fb_xres);
         Self {
             settings,
             all,
@@ -85,8 +102,8 @@ impl Zones {
 
 /// The inset a `zone_w`-wide zone can afford, so a narrow zone still shows its
 /// label rather than pushing it out.
-fn inset_for(zone_w: u32) -> u32 {
-    (zone_w / 6).min(LABEL_INSET)
+fn inset_for(zone_w: u32, s: Scale) -> u32 {
+    (zone_w / 6).min(s.px(LABEL_INSET))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,8 +122,8 @@ pub fn n_pages(books: usize, page_size: usize) -> usize {
     books.div_ceil(page_size.max(1)).max(1)
 }
 
-pub fn strip_top(fb_yres: u32) -> u32 {
-    fb_yres.saturating_sub(STRIP_H)
+pub fn strip_top(fb_xres: u32, fb_yres: u32) -> u32 {
+    fb_yres.saturating_sub(strip_h(fb_xres))
 }
 
 /// The zone at `(tx, ty)`. Integer geometry, no framebuffer.
@@ -118,7 +135,7 @@ pub fn hit(
     total_pages: usize,
     pending: usize,
 ) -> Option<PagerHit> {
-    if ty < strip_top(fb_yres) {
+    if ty < strip_top(fb_xres, fb_yres) {
         return None;
     }
     let z = Zones::compute(fb_xres);
@@ -147,18 +164,19 @@ pub fn hit(
 /// The largest [`LABEL_PX`] at which every label fits the zone it is drawn in,
 /// or the smallest of them. `draw` is the only caller; the labels are passed as
 /// `(text, zone width)`.
-fn label_px(renderer: &mut TextRenderer, labels: &[(&str, u32)]) -> f32 {
+fn label_px(renderer: &mut TextRenderer, labels: &[(&str, u32)], s: Scale) -> f32 {
     for px in LABEL_PX {
-        let fits = renderer.at_px(*px, |r| {
+        let scaled = s.font(*px);
+        let fits = renderer.at_px(scaled, |r| {
             labels
                 .iter()
-                .all(|(text, zone_w)| r.measure_width(text) + inset_for(*zone_w) * 2 <= *zone_w)
+                .all(|(text, zone_w)| r.measure_width(text) + inset_for(*zone_w, s) * 2 <= *zone_w)
         });
         if fits {
-            return *px;
+            return scaled;
         }
     }
-    LABEL_PX[LABEL_PX.len() - 1]
+    s.font(LABEL_PX[LABEL_PX.len() - 1])
 }
 
 pub fn draw(
@@ -169,12 +187,15 @@ pub fn draw(
     pending: usize,
 ) {
     let xres = fb.var.xres;
-    let strip_y = strip_top(fb.var.yres);
-    // 2px black divider, white strip body below.
-    fb.fill_rect(strip_y, 0, xres, 2, 0x00);
-    fb.fill_rect(strip_y + 2, 0, xres, STRIP_H - 2, 0xFF);
+    let s = Scale::of_width(xres);
+    let strip_h = s.px(STRIP_H);
+    let rule_h = s.px(RULE_H);
+    let strip_y = strip_top(xres, fb.var.yres);
+    // A black divider along the top, white strip body below.
+    fb.fill_rect(strip_y, 0, xres, rule_h, 0x00);
+    fb.fill_rect(strip_y + rule_h, 0, xres, strip_h - rule_h, 0xFF);
 
-    let baseline = (strip_y + STRIP_H * 70 / 100) as i32;
+    let baseline = (strip_y + strip_h * 70 / 100) as i32;
     let z = Zones::compute(xres);
     let all_label = format!("Decrypt All ({pending})");
     let counter = format!("{} / {}", page + 1, total_pages);
@@ -191,16 +212,17 @@ pub fn draw(
             ("← Prev", nav_half),
             ("Next →", nav_half),
         ],
+        s,
     );
 
     renderer.at_px(px, |r| {
         let exit_w = Zones::width(0, z.settings);
-        r.draw(fb, inset_for(exit_w) as i32, baseline, "Exit", false);
+        r.draw(fb, inset_for(exit_w, s) as i32, baseline, "Exit", false);
 
         let settings_w = Zones::width(z.settings, z.all);
         r.draw(
             fb,
-            (z.settings + inset_for(settings_w)) as i32,
+            (z.settings + inset_for(settings_w, s)) as i32,
             baseline,
             "Settings",
             false,
@@ -212,7 +234,7 @@ pub fn draw(
         if pending > 0 {
             r.draw(
                 fb,
-                (z.all + inset_for(all_w)) as i32,
+                (z.all + inset_for(all_w, s)) as i32,
                 baseline,
                 &all_label,
                 false,
@@ -222,7 +244,7 @@ pub fn draw(
         if total_pages <= 1 {
             return;
         }
-        let inset = inset_for(nav_half);
+        let inset = inset_for(nav_half, s);
         // Each label appears while that direction exists, anchored inside the
         // half `hit` answers for it — a `Next` drawn left of `nav_mid` reads as
         // `Prev` under the finger.
@@ -249,9 +271,27 @@ pub fn draw(
 
     // Separators last: a label that ran long is cut by its own zone edge
     // rather than reading as part of the next one.
-    for edge in [z.settings, z.all, z.nav] {
-        if edge >= 2 && edge < xres {
-            fb.fill_rect(strip_y + 12, edge - 2, 2, STRIP_H - 24, 0x00);
+    //
+    // One to the left of each *live* zone, so a dead zone leaves no empty
+    // compartment behind: with nothing to decrypt there is no `Decrypt All`
+    // label, and a bar on either side of the gap would read as a button that
+    // lost its text.
+    let sep_inset = s.px(SEP_INSET);
+    let sep_w = s.px(SEP_W);
+    let edges = [
+        (z.settings, true),
+        (z.all, pending > 0),
+        (z.nav, total_pages > 1),
+    ];
+    for (edge, live) in edges {
+        if live && edge >= sep_w && edge < xres {
+            fb.fill_rect(
+                strip_y + sep_inset,
+                edge - sep_w,
+                sep_w,
+                strip_h.saturating_sub(sep_inset * 2),
+                0x00,
+            );
         }
     }
 }
@@ -309,7 +349,8 @@ mod tests {
     fn every_panel_keeps_a_tappable_zone_for_each_control() {
         for xres in PANELS {
             let z = Zones::compute(*xres);
-            let at = |x: u32| hit(x, YRES - STRIP_H / 2, *xres, YRES, 3, 3);
+            let s = Scale::of_width(*xres);
+            let at = |x: u32| hit(x, YRES - s.px(STRIP_H) / 2, *xres, YRES, 3, 3);
             assert_eq!(at(0), Some(PagerHit::Exit), "exit at {xres}");
             assert_eq!(
                 at(z.settings),
@@ -319,10 +360,12 @@ mod tests {
             assert_eq!(at(z.all), Some(PagerHit::DecryptAll), "all at {xres}");
             assert_eq!(at(z.nav), Some(PagerHit::Prev), "prev at {xres}");
             assert_eq!(at(*xres - 1), Some(PagerHit::Next), "next at {xres}");
+            // The floor is a design pixel, so the comparison is too.
+            let kept = xres - z.nav;
             assert!(
-                xres - z.nav >= NAV_MIN_W,
-                "{xres}: paging kept {} < {NAV_MIN_W}",
-                xres - z.nav
+                kept >= s.px(NAV_MIN_W),
+                "{xres}: paging kept {kept} < {}",
+                s.px(NAV_MIN_W)
             );
         }
     }
@@ -368,17 +411,18 @@ mod tests {
 
     #[test]
     fn taps_above_the_strip_belong_to_the_grid() {
-        assert_eq!(hit(20, strip_top(YRES) - 1, XRES, YRES, 3, 3), None);
+        assert_eq!(hit(20, strip_top(XRES, YRES) - 1, XRES, YRES, 3, 3), None);
     }
 
     /// A zone narrower than six insets takes a smaller one rather than pushing
     /// its label out of the zone.
     #[test]
     fn a_narrow_zone_gives_up_its_inset() {
-        assert_eq!(inset_for(600), LABEL_INSET);
-        assert_eq!(inset_for(192), LABEL_INSET);
-        assert_eq!(inset_for(90), 15);
-        assert_eq!(inset_for(0), 0);
+        let s = Scale::none();
+        assert_eq!(inset_for(600, s), LABEL_INSET);
+        assert_eq!(inset_for(192, s), LABEL_INSET);
+        assert_eq!(inset_for(90, s), 15);
+        assert_eq!(inset_for(0, s), 0);
     }
 
     #[test]

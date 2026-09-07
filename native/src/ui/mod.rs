@@ -1,5 +1,9 @@
 //! Text rasterization, the cover grid, the settings page, and the blocking
 //! overlays.
+//!
+//! Every pixel constant here is a design pixel at [`scale::DESIGN_DPI`]; the
+//! module that draws with it maps it through [`scale::Scale`] for the panel in
+//! front of it.
 
 pub mod configmenu;
 pub mod grid;
@@ -8,6 +12,7 @@ pub mod keyboard;
 pub mod pager;
 pub mod panel;
 pub mod pathbar;
+pub mod scale;
 pub mod setup;
 pub mod text;
 pub mod toast;

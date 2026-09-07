@@ -10,9 +10,11 @@ use crate::eink::input::{Input, InputEvent};
 use crate::eink::touch::TouchEvent;
 use crate::scan::Candidate;
 use crate::ui::panel::{self, Chip, Item, Layout};
+use crate::ui::scale::Scale;
 use crate::ui::text::TextRenderer;
 
 /// The title's size, against `app::FONT_PX` for everything else.
+/// Title size as a design pixel; `ui::scale` maps it to the panel.
 const TITLE_PX: f32 = 44.0;
 
 /// Chars an [`Item::Note`] line may carry before it runs off the panel.
@@ -357,9 +359,14 @@ fn apply(row: Row, chip: usize, cfg: &mut Config, folders: &[Candidate]) {
     }
 }
 
+/// [`TITLE_PX`] on a panel `fb_xres` wide.
+fn title_px(fb_xres: u32) -> f32 {
+    Scale::of_width(fb_xres).font(TITLE_PX)
+}
+
 /// The line height of the title face, for [`Layout::compute`].
-fn title_line_height(renderer: &mut TextRenderer) -> u32 {
-    renderer.at_px(TITLE_PX, |r| r.line_height())
+fn title_line_height(renderer: &mut TextRenderer, fb_xres: u32) -> u32 {
+    renderer.at_px(title_px(fb_xres), |r| r.line_height())
 }
 
 /// Owns input until a tap on the `[ Done ]` strip, the Folder chip or the Get
@@ -377,9 +384,15 @@ pub fn draw(
 ) -> (Page, Layout) {
     let status = status(installed.converter(), &installed.app);
     let p = page(cfg, folders, installed);
-    let layout = layout_for(renderer, fb.var.yres, &p.items);
+    let layout = layout_for(renderer, fb.var.xres, fb.var.yres, &p.items);
     panel::render(
-        fb, renderer, &layout, "Settings", &status, TITLE_PX, &p.items,
+        fb,
+        renderer,
+        &layout,
+        "Settings",
+        &status,
+        title_px(fb.var.xres),
+        &p.items,
     );
     (p, layout)
 }
@@ -464,7 +477,7 @@ pub fn run(
                 let turned = input.follow_orientation();
                 if turned || pump.resized.is_some() {
                     input.set_size(fb.var.xres, fb.var.yres);
-                    layout = layout_for(renderer, fb.var.yres, &p.items);
+                    layout = layout_for(renderer, fb.var.xres, fb.var.yres, &p.items);
                 }
                 match pump.covered {
                     // Covered: the panel belongs to the window over this one.
@@ -482,10 +495,11 @@ pub fn run(
 }
 
 /// [`Layout::compute`] against the two faces this page draws.
-fn layout_for(renderer: &mut TextRenderer, yres: u32, items: &[Item]) -> Layout {
+fn layout_for(renderer: &mut TextRenderer, xres: u32, yres: u32, items: &[Item]) -> Layout {
     Layout::compute(
         renderer.line_height(),
-        title_line_height(renderer),
+        title_line_height(renderer, xres),
+        xres,
         yres,
         items,
     )
@@ -991,11 +1005,12 @@ mod tests {
     /// half again as tall.
     #[test]
     fn the_whole_page_fits_the_shortest_panel() {
+        let xres = crate::ui::pager::NARROWEST_PANEL_W;
         let yres = crate::ui::pager::NARROWEST_PANEL_W;
         for converter in [true, false] {
             let p = page(&Config::default(), &folders(), &state(converter));
             for lh in 24..=56 {
-                let layout = Layout::compute(lh, lh * 4 / 3, yres, &p.items);
+                let layout = Layout::compute(lh, lh * 4 / 3, xres, yres, &p.items);
                 assert_eq!(
                     layout.drawable(),
                     p.items.len(),

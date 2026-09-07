@@ -18,7 +18,13 @@
 //! [`crate::ui::configmenu`] builds the [`Item`]s and owns what a tap means.
 
 use crate::eink::fb::{Framebuffer, MxcfbRect};
+use crate::ui::scale::Scale;
 use crate::ui::text::TextRenderer;
+
+/// The density of the panel `fb` draws, for the design pixels below.
+fn fb_scale(fb: &Framebuffer) -> Scale {
+    Scale::of_width(fb.var.xres)
+}
 use crate::ui::{BLACK, QUIET, WHITE};
 
 /// Bottom action strip, matching `setup::BTN_H`.
@@ -80,7 +86,7 @@ pub enum Item {
     /// A setting: a label, and the values it can take drawn beside it.
     Choice { label: String, chips: Vec<Chip> },
     /// Quiet text under the row it explains, one row per `\n`-delimited line.
-    /// Not tappable, and drawn from [`ROW_INSET`] rather than the chip column
+    /// Not tappable, and drawn from [`fb_scale(fb).px(ROW_INSET)`] rather than the chip column
     /// so a long line has the width of the page.
     Note(String),
 }
@@ -192,12 +198,13 @@ impl Layout {
     /// `lh` and `title_lh` are the line heights of the two faces actually
     /// drawn; spacing derived from the wrong one overlaps the title and the
     /// status line.
-    pub fn compute(lh: u32, title_lh: u32, yres: u32, items: &[Item]) -> Self {
+    pub fn compute(lh: u32, title_lh: u32, xres: u32, yres: u32, items: &[Item]) -> Self {
+        let s = Scale::of_width(xres);
         let lh = lh.max(1);
         let title_lh = title_lh.max(1);
         let title_top = title_lh / 2;
         let status_top = title_top + title_lh;
-        let strip_top = yres.saturating_sub(STRIP_H);
+        let strip_top = yres.saturating_sub(s.px(STRIP_H));
 
         // The last tier stands whether or not it fits: a page with nowhere to
         // put its rows is still better drawn tight than not drawn.
@@ -281,10 +288,10 @@ fn fits(rows: &[RowBox], strip_top: u32) -> bool {
 }
 
 /// How wide each chip of a row is: its own text, and the blank either side.
-fn chip_widths(chips: &[Chip], measure: &mut impl FnMut(&str) -> u32) -> Vec<u32> {
+fn chip_widths(chips: &[Chip], s: Scale, measure: &mut impl FnMut(&str) -> u32) -> Vec<u32> {
     chips
         .iter()
-        .map(|c| measure(&c.label).saturating_add(CHIP_PAD * 2))
+        .map(|c| measure(&c.label).saturating_add(s.px(CHIP_PAD) * 2))
         .collect()
 }
 
@@ -293,14 +300,14 @@ fn chip_widths(chips: &[Chip], measure: &mut impl FnMut(&str) -> u32) -> Vec<u32
 /// The one place that arithmetic lives, because [`chip_column`] has to know
 /// what [`chip_bounds`] is about to lay out: a second copy of it would leave
 /// room for a run of a different length than the one drawn.
-fn run_width(widths: impl IntoIterator<Item = u32>) -> u32 {
+fn run_width(widths: impl IntoIterator<Item = u32>, s: Scale) -> u32 {
     let mut total = 0u32;
     let mut cells = 0u32;
     for w in widths {
         total = total.saturating_add(w);
         cells = cells.saturating_add(1);
     }
-    total.saturating_add(CHIP_GAP.saturating_mul(cells.saturating_sub(1)))
+    total.saturating_add(s.px(CHIP_GAP).saturating_mul(cells.saturating_sub(1)))
 }
 
 /// Where every row's chips start, in screen x.
@@ -314,21 +321,23 @@ fn run_width(widths: impl IntoIterator<Item = u32>) -> u32 {
 /// margin, and floored at a third of the line so one long run cannot squeeze
 /// every label on the page.
 pub fn chip_column(items: &[Item], xres: u32, mut measure: impl FnMut(&str) -> u32) -> u32 {
+    let s = Scale::of_width(xres);
     let widest = items
         .iter()
         .filter_map(|item| item.label().map(&mut measure))
         .max()
         .unwrap_or(0);
-    let wanted = ROW_INSET
+    let wanted = s
+        .px(ROW_INSET)
         .saturating_add(widest)
-        .saturating_add(CHIP_GAP * 3);
+        .saturating_add(s.px(CHIP_GAP) * 3);
 
-    let right = xres.saturating_sub(MARGIN_X);
+    let right = xres.saturating_sub(s.px(MARGIN_X));
     let room = items
         .iter()
         .filter_map(|item| match item {
             Item::Choice { chips, .. } => {
-                Some(right.saturating_sub(run_width(chip_widths(chips, &mut measure))))
+                Some(right.saturating_sub(run_width(chip_widths(chips, s, &mut measure), s)))
             }
             // Neither has a second column, so neither constrains one.
             Item::Heading(_) | Item::Note(_) => None,
@@ -359,15 +368,16 @@ pub fn chip_bounds(
     chips: &[Chip],
     mut measure: impl FnMut(&str) -> u32,
 ) -> Vec<(u32, u32)> {
-    let right = xres.saturating_sub(MARGIN_X);
-    let widths = chip_widths(chips, &mut measure);
-    let wanted = run_width(widths.iter().copied());
+    let s = Scale::of_width(xres);
+    let right = xres.saturating_sub(s.px(MARGIN_X));
+    let widths = chip_widths(chips, s, &mut measure);
+    let wanted = run_width(widths.iter().copied(), s);
     // Its own label only when that is further left than the column: the row
     // the column was measured from gains nothing by starting after it again.
     let mut x = if column.saturating_add(wanted) <= right {
         column
     } else {
-        (ROW_INSET + measure(label) + CHIP_GAP).min(column)
+        (s.px(ROW_INSET) + measure(label) + s.px(CHIP_GAP)).min(column)
     };
 
     let mut out = Vec::new();
@@ -376,7 +386,7 @@ pub fn chip_bounds(
             break;
         }
         out.push((x, w));
-        x = x.saturating_add(w + CHIP_GAP);
+        x = x.saturating_add(w + s.px(CHIP_GAP));
     }
     out
 }
@@ -446,11 +456,17 @@ pub fn render(
 
     renderer.at_px(title_px, |r| {
         let baseline = (layout.title_top + r.line_height() * 78 / 100) as i32;
-        r.draw_bold(fb, MARGIN_X as i32, baseline, title, BLACK);
+        r.draw_bold(fb, fb_scale(fb).px(MARGIN_X) as i32, baseline, title, BLACK);
     });
     if !status.is_empty() {
         let baseline = (layout.status_top + layout.lh * 78 / 100) as i32;
-        renderer.draw_ink(fb, MARGIN_X as i32, baseline, status, QUIET);
+        renderer.draw_ink(
+            fb,
+            fb_scale(fb).px(MARGIN_X) as i32,
+            baseline,
+            status,
+            QUIET,
+        );
     }
 
     let column = chip_column(items, xres, |s| renderer.measure_width(s));
@@ -496,11 +512,17 @@ fn draw_item(
         Item::Heading(text) => {
             let foot = b.top + b.height.saturating_sub(RULE_H);
             let text_baseline = foot.saturating_sub(layout.lh / 5) as i32;
-            renderer.draw_bold(fb, MARGIN_X as i32, text_baseline, text, BLACK);
+            renderer.draw_bold(
+                fb,
+                fb_scale(fb).px(MARGIN_X) as i32,
+                text_baseline,
+                text,
+                BLACK,
+            );
             fb.fill_rect(
                 foot,
-                MARGIN_X,
-                xres.saturating_sub(MARGIN_X * 2),
+                fb_scale(fb).px(MARGIN_X),
+                xres.saturating_sub(fb_scale(fb).px(MARGIN_X) * 2),
                 RULE_H,
                 BLACK,
             );
@@ -508,7 +530,13 @@ fn draw_item(
         // No rule of its own: the chips are visibly bounded already, and a
         // line under every setting buries the structure of the page.
         Item::Choice { label, chips } => {
-            renderer.draw(fb, ROW_INSET as i32, baseline(layout.lh), label, false);
+            renderer.draw(
+                fb,
+                fb_scale(fb).px(ROW_INSET) as i32,
+                baseline(layout.lh),
+                label,
+                false,
+            );
             let bounds = chip_bounds(column, xres, label, chips, |s| renderer.measure_width(s));
             for (c, chip) in chips.iter().enumerate().take(bounds.len()) {
                 draw_chip(fb, renderer, chip_rect(layout, i, &bounds, c), chip);
@@ -520,7 +548,7 @@ fn draw_item(
             for (n, line) in text.lines().enumerate() {
                 let top = b.top + n as u32 * per;
                 let y = (top + per / 2) as i32 + (layout.lh as i32 * 36 / 100);
-                renderer.draw_ink(fb, ROW_INSET as i32, y, line, QUIET);
+                renderer.draw_ink(fb, fb_scale(fb).px(ROW_INSET) as i32, y, line, QUIET);
             }
         }
     }
@@ -543,7 +571,7 @@ fn draw_chip(fb: &mut Framebuffer, renderer: &mut TextRenderer, rect: MxcfbRect,
     };
     fb.fill_rect(rect.top, rect.left, rect.width, rect.height, ground);
     if !chip.on {
-        let t = CHIP_BORDER;
+        let t = fb_scale(fb).px(CHIP_BORDER);
         fb.fill_rect(rect.top, rect.left, rect.width, t, ink);
         fb.fill_rect(rect.top + rect.height - t, rect.left, rect.width, t, ink);
         fb.fill_rect(rect.top, rect.left, t, rect.height, ink);
@@ -562,11 +590,11 @@ fn draw_strip(fb: &mut Framebuffer, renderer: &mut TextRenderer, layout: &Layout
     let xres = fb.var.xres;
     let top = layout.strip_top;
     fb.fill_rect(top, 0, xres, 2, BLACK);
-    fb.fill_rect(top + 2, 0, xres, STRIP_H - 2, WHITE);
+    fb.fill_rect(top + 2, 0, xres, fb_scale(fb).px(STRIP_H) - 2, WHITE);
 
     let label = "[ Done ]";
-    let baseline = (top + STRIP_H * 60 / 100) as i32;
-    renderer.draw(fb, MARGIN_X as i32, baseline, label, false);
+    let baseline = (top + fb_scale(fb).px(STRIP_H) * 60 / 100) as i32;
+    renderer.draw(fb, fb_scale(fb).px(MARGIN_X) as i32, baseline, label, false);
 }
 
 /// The whole panel, for a `WAVEFORM_MODE_GC16` refresh.
@@ -609,7 +637,7 @@ mod tests {
     const YRES: u32 = 1680;
 
     fn layout(items: &[Item]) -> Layout {
-        Layout::compute(44, 58, YRES, items)
+        Layout::compute(44, 58, XRES, YRES, items)
     }
 
     #[test]
@@ -661,7 +689,7 @@ mod tests {
         // ships, at both ends.
         for lh in 24..=64 {
             let yres = crate::ui::pager::NARROWEST_PANEL_W;
-            let l = Layout::compute(lh, lh * 4 / 3, yres, &items);
+            let l = Layout::compute(lh, lh * 4 / 3, XRES, yres, &items);
             let last = l.rows[items.len() - 1];
             assert!(
                 last.top + last.height <= l.strip_top,
@@ -691,7 +719,12 @@ mod tests {
         let items = page();
         let column = chip_column(&items, XRES, measure);
         // The widest label on the page sets it: `Also write` at 10 chars.
-        assert_eq!(column, ROW_INSET + measure("Also write") + CHIP_GAP * 3);
+        assert_eq!(
+            column,
+            Scale::of_width(XRES).px(ROW_INSET)
+                + measure("Also write")
+                + Scale::of_width(XRES).px(CHIP_GAP) * 3
+        );
         for item in &items {
             let Item::Choice { label, chips } = item else {
                 continue;
@@ -712,7 +745,10 @@ mod tests {
             &[Chip::new("KFX", false)],
             measure,
         );
-        assert_eq!(bounds[0].1, measure("KFX") + CHIP_PAD * 2);
+        assert_eq!(
+            bounds[0].1,
+            measure("KFX") + Scale::of_width(XRES).px(CHIP_PAD) * 2
+        );
     }
 
     #[test]
@@ -733,7 +769,12 @@ mod tests {
             bounds[0].0 < column,
             "started at the column it could not afford"
         );
-        assert_eq!(bounds[0].0, ROW_INSET + measure(label) + CHIP_GAP);
+        assert_eq!(
+            bounds[0].0,
+            Scale::of_width(XRES).px(ROW_INSET)
+                + measure(label)
+                + Scale::of_width(XRES).px(CHIP_GAP)
+        );
     }
 
     #[test]
@@ -750,8 +791,11 @@ mod tests {
         assert!(bounds.len() < chips.len());
         // Whatever survived finishes inside the margin at full width.
         for (x, w) in &bounds {
-            assert!(x + w <= XRES - MARGIN_X);
-            assert_eq!(*w, measure("chip0") + CHIP_PAD * 2);
+            assert!(x + w <= XRES - Scale::of_width(XRES).px(MARGIN_X));
+            assert_eq!(
+                *w,
+                measure("chip0") + Scale::of_width(XRES).px(CHIP_PAD) * 2
+            );
         }
     }
 
@@ -774,8 +818,18 @@ mod tests {
         }
         // The label, the gap between two chips, and past the last one.
         let y = l.rows[1].top + l.rows[1].height / 2;
-        assert_eq!(hit(&items, &l, XRES, ROW_INSET + 4, y, measure), None);
-        let gap = bounds[0].0 + bounds[0].1 + CHIP_GAP / 2;
+        assert_eq!(
+            hit(
+                &items,
+                &l,
+                XRES,
+                Scale::of_width(XRES).px(ROW_INSET) + 4,
+                y,
+                measure
+            ),
+            None
+        );
+        let gap = bounds[0].0 + bounds[0].1 + Scale::of_width(XRES).px(CHIP_GAP) / 2;
         assert_eq!(hit(&items, &l, XRES, gap, y, measure), None);
         let past = bounds[1].0 + bounds[1].1 + 40;
         assert_eq!(hit(&items, &l, XRES, past, y, measure), None);
