@@ -1,6 +1,6 @@
 //! Cover grid: layout + cell hit-test + image blit.
 //!
-//! grid centered on the panel (see `Layout`), each cell `CELL_W` wide
+//! Grid centred on the panel, each cell a `Layout::cell_w` by `cell_h`
 //! bounding box. Covers fit inside via aspect-preserving resize (image
 //! crate's `Triangle` filter — bilinear, fast enough on armv7l, and we
 //! don't need Lanczos-quality on a 16-shade eink panel). Missing covers
@@ -26,22 +26,47 @@ pub struct Label<'a> {
     pub script: Script,
 }
 
-/// Cell width, a design pixel through [`Scale`]: a cover is a physical size, so
-/// a bigger panel wants more covers rather than larger ones. Only the row and
-/// column count adapts, and height flexes just enough to land one more row.
+/// Cell width when the panel has room for it, a design pixel through [`Scale`]:
+/// a cover is a physical size, so a bigger panel wants more covers rather than
+/// larger ones.
 pub const CELL_W: u32 = 360;
+/// Narrowest a cell may be squeezed to in order to reach [`TARGET_COLS`]. The
+/// 6" panels reach three columns inside this band and hold two outside it,
+/// which is the difference between nine covers a page and four.
+pub const CELL_W_MIN: u32 = 320;
 /// Tallest a cell gets, which is the height the 7" devices settle at.
 pub const CELL_H_MAX: u32 = 440;
-/// Shortest a cell may be squeezed to in order to fit another row. Trades ~3%
-/// of cover height for a whole extra row on a tall panel, which is the better
-/// deal at this density.
-pub const CELL_H_MIN: u32 = 420;
+/// Shortest a cell may be squeezed to in order to fit another row. Trades ~9%
+/// of cover height for a whole extra row, which is the better deal at this
+/// density.
+pub const CELL_H_MIN: u32 = 400;
 pub const COL_GAP: u32 = 32;
 pub const ROW_GAP: u32 = 20;
+
+/// The page no panel goes below, whatever the cover size costs.
+///
+/// A cover is a physical size, so the column and row counts ordinarily fall out
+/// of [`CELL_W`] and [`CELL_H_MAX`] — which on a 6" panel is two of each, and
+/// four covers a page is a lot of paging. Below this the cell shrinks toward
+/// [`CELL_W_MIN`] / [`CELL_H_MIN`] instead. A panel already holding the target
+/// keeps its cover size: nothing here makes a grid denser than the preferred
+/// size gives.
+const TARGET_COLS: usize = 3;
+const TARGET_ROWS: usize = 3;
+
+/// Blank kept either side of the grid. Three columns fill a 6" panel almost
+/// exactly, and without this the outer covers run to the bezel.
+const SIDE_MARGIN: u32 = 20;
 /// Stroke [`outline_cell`] frames a pressed cell with.
 const OUTLINE_W: u32 = 6;
 /// Side of the badge [`draw_arm_cue`] centres on the cover.
 const ARM_BADGE: u32 = 140;
+
+/// How many `cell`-long cells fit `span` with `gap` between them; used for both
+/// axes. Never zero: a panel too small for one cell still draws one.
+fn fits(span: u32, cell: u32, gap: u32) -> usize {
+    ((span + gap) / (cell + gap)).max(1) as usize
+}
 
 /// The grid as it fits *this* panel: how many cells, how tall, and where the
 /// block sits. Computed once at startup from the framebuffer geometry.
@@ -62,22 +87,30 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The grid between [`header::margin`] and [`pager::strip_h`]: fit as many
-    /// rows as the panel allows at [`CELL_H_MIN`], then give the rows back
-    /// whatever height is spare, capped at [`CELL_H_MAX`]. Every constant is a
-    /// design pixel through [`Scale`].
+    /// The grid between [`header::margin`] and [`pager::strip_h`], inside
+    /// [`SIDE_MARGIN`]: as many columns and rows as fit at [`CELL_W`] /
+    /// [`CELL_H_MAX`], or as many as [`TARGET_COLS`] / [`TARGET_ROWS`] ask for
+    /// if that is more, the cell shrinking toward [`CELL_W_MIN`] /
+    /// [`CELL_H_MIN`] to pay for them. Every constant is a design pixel through
+    /// [`Scale`].
     ///
-    /// The band between the two heights is what buys a row on a panel that has
-    /// the height for one but not at full size; narrowing it costs that row.
+    /// The band between each pair is what buys a column or a row on a panel
+    /// that has the room for one but not at full size; narrowing it costs that
+    /// column or row.
     pub fn compute(fb_xres: u32, fb_yres: u32) -> Self {
         let s = Scale::of_width(fb_xres);
-        let (cell_w, col_gap, row_gap) = (s.px(CELL_W), s.px(COL_GAP), s.px(ROW_GAP));
+        let (col_gap, row_gap) = (s.px(COL_GAP), s.px(ROW_GAP));
+        let (w_min, w_max) = (s.px(CELL_W_MIN), s.px(CELL_W));
         let (h_min, h_max) = (s.px(CELL_H_MIN), s.px(CELL_H_MAX));
         let top_margin = header::margin(fb_xres);
 
-        let cols = ((fb_xres + col_gap) / (cell_w + col_gap)).max(1) as usize;
         let avail = fb_yres.saturating_sub(top_margin + pager::strip_h(fb_xres));
-        let rows = ((avail + row_gap) / (h_min + row_gap)).max(1) as usize;
+        let span = fb_xres.saturating_sub(s.px(SIDE_MARGIN) * 2).max(1);
+
+        let cols = fits(span, w_max, col_gap).max(fits(span, w_min, col_gap).min(TARGET_COLS));
+        let rows = fits(avail, h_max, row_gap).max(fits(avail, h_min, row_gap).min(TARGET_ROWS));
+        let cell_w =
+            (span.saturating_sub((cols as u32 - 1) * col_gap) / cols as u32).clamp(w_min, w_max);
         let cell_h =
             (avail.saturating_sub((rows as u32 - 1) * row_gap) / rows as u32).clamp(h_min, h_max);
 
@@ -790,13 +823,15 @@ mod tests {
         }
     }
 
-    /// The Scribe's extra area buys rows, not bigger covers.
+    /// The Scribe's extra area buys rows and columns, not bigger covers.
     #[test]
     fn scribe_gains_rows_and_columns() {
         let l = Layout::compute(1860, 2480);
         assert_eq!((l.cols, l.rows), (4, 5));
         assert_eq!(l.page_size(), 20);
-        assert_eq!(l.left, 162);
+        assert_eq!(l.cell_w, CELL_W, "the cover keeps its size");
+        let grid_w = l.cols as u32 * l.cell_w + (l.cols as u32 - 1) * l.col_gap;
+        assert_eq!(l.left, (1860 - grid_w as i32) / 2);
         // Fit-then-expand: five rows only exist at or below CELL_H_MAX, and the
         // result must still clear the floor. The Scribe is 300 dpi, so these are
         // device pixels and design pixels at once.
@@ -811,6 +846,35 @@ mod tests {
         assert!(used <= usable, "{used} overflows the usable {usable}");
     }
 
+    /// Every shipped panel, pinned. The 6" three carry [`TARGET_COLS`] by
+    /// [`TARGET_ROWS`] on a shrunk cover; the rest hold [`CELL_W`] and take
+    /// whatever column count that gives.
+    #[test]
+    fn every_shipped_panel_holds_at_least_the_target_page() {
+        for (name, w, h, want) in [
+            ("basic", 600u32, 800u32, (3usize, 3usize)),
+            ("pw2", 758, 1024, (3, 3)),
+            ("pw3", 1072, 1448, (3, 3)),
+            ("colorsoft", 1236, 1648, (3, 3)),
+            ("koa2", 1264, 1680, (3, 3)),
+            ("scribe", 1860, 2480, (4, 5)),
+        ] {
+            let l = Layout::compute(w, h);
+            assert_eq!((l.cols, l.rows), want, "{name}");
+            assert!(l.cols >= TARGET_COLS && l.rows >= TARGET_ROWS, "{name}");
+            // The cover stays inside its band, and the grid inside the panel.
+            let s = Scale::of_width(w);
+            assert!(
+                (s.px(CELL_W_MIN)..=s.px(CELL_W)).contains(&l.cell_w),
+                "{name}: cell_w {}",
+                l.cell_w
+            );
+            let grid_w = l.cols as u32 * l.cell_w + (l.cols as u32 - 1) * l.col_gap;
+            assert!(l.left > 0, "{name}: grid runs to the panel edge");
+            assert!(l.left as u32 + grid_w <= w, "{name}: grid overflows");
+        }
+    }
+
     /// A panel too small for even one full cell must still yield a usable grid
     /// rather than a divide-by-zero or an empty page.
     #[test]
@@ -823,15 +887,19 @@ mod tests {
     #[test]
     fn taps_in_gaps_and_margins_miss() {
         let l = Layout::compute(1860, 2480);
+        let n = l.page_size();
         let (x, y) = l.cell_xy(0);
-        assert_eq!(l.cell_at_tap(x as u32 + 5, y as u32 + 5, 20), Some(0));
+        assert_eq!(l.cell_at_tap(x as u32 + 5, y as u32 + 5, n), Some(0));
         // The column gap between cell 0 and cell 1.
-        let gap_x = x as u32 + CELL_W + COL_GAP / 2;
-        assert_eq!(l.cell_at_tap(gap_x, y as u32 + 5, 20), None);
-        // Left of the grid entirely.
-        assert_eq!(l.cell_at_tap(4, y as u32 + 5, 20), None);
+        let gap_x = x as u32 + l.cell_w + l.col_gap / 2;
+        assert_eq!(l.cell_at_tap(gap_x, y as u32 + 5, n), None);
+        // Left of the grid entirely. The margin is whatever centring leaves,
+        // so the tap is taken from `left` rather than named.
+        if l.left > 0 {
+            assert_eq!(l.cell_at_tap(l.left as u32 - 1, y as u32 + 5, n), None);
+        }
         // Past the last row — must not wrap onto a phantom cell.
-        assert_eq!(l.cell_at_tap(x as u32 + 5, 2470, 20), None);
+        assert_eq!(l.cell_at_tap(x as u32 + 5, 2470, n), None);
     }
 
     #[test]

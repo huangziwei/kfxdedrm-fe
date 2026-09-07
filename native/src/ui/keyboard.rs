@@ -31,8 +31,8 @@ const GAP: i32 = 8;
 const MARGIN: i32 = 20;
 
 /// Bottom command strip: `[ Back ] | Shift | space | Clear | [ Done ]`. Height
-/// matches `ui/panel.rs`, `ZONE_W` the fixed slots in `ui/pager.rs`, landing
-/// `[ Back ]` where `Exit` sits.
+/// matches `ui/panel.rs`'s strip, and `[ Back ]` takes the leftmost slot the
+/// way `ui/pager.rs` gives that edge to `Exit`.
 const STRIP_H: u32 = 120;
 const ZONE_W: u32 = 200;
 /// Slots in the strip, for the width [`layout`] leaves `space`.
@@ -153,7 +153,8 @@ fn layout(xres: u32, yres: u32) -> Vec<KeyButton> {
     // `[ Back ]` takes the leftmost slot, the one `crate::ui::pager` gives
     // `Exit`. `[ Done ]` sits far right, the wide `space` in the middle.
     let sy = strip_top(xres, yres) as i32;
-    let side = ZONE_W.min(xres / ZONES);
+    let strip_h = s.px(STRIP_H);
+    let side = s.px(ZONE_W).min(xres / ZONES);
     for (x, w, key, label) in [
         (0, side, Key::Back, "[ Back ]"),
         (side as i32, side, Key::Shift, "Shift"),
@@ -180,7 +181,7 @@ fn layout(xres: u32, yres: u32) -> Vec<KeyButton> {
             x,
             y: sy,
             w,
-            h: STRIP_H,
+            h: strip_h,
             key,
             label: label.to_string(),
             style: Style::Zone,
@@ -211,28 +212,28 @@ fn band_rect(fb: &Framebuffer, lh: u32) -> MxcfbRect {
 /// The drawn face of a key: a grid cell inset by half a gap, a strip slot inset
 /// past the strip's top and left rules. Those rules are drawn inside the slot
 /// rects, and a full-cell fill paints over them.
-fn face(kb: &KeyButton) -> (i32, i32, u32, u32) {
+fn face(kb: &KeyButton, s: Scale) -> (i32, i32, u32, u32) {
     match kb.style {
         Style::Zone => (
-            kb.x + RULE as i32,
-            kb.y + RULE as i32,
-            kb.w.saturating_sub(RULE).max(1),
-            kb.h.saturating_sub(RULE).max(1),
+            kb.x + s.i(RULE as i32),
+            kb.y + s.i(RULE as i32),
+            kb.w.saturating_sub(s.px(RULE)).max(1),
+            kb.h.saturating_sub(s.px(RULE)).max(1),
         ),
         Style::Face => {
-            let inset = GAP / 2;
+            let inset = s.i(GAP) / 2;
             (
                 kb.x + inset,
                 kb.y + inset,
-                kb.w.saturating_sub(GAP as u32).max(1),
-                kb.h.saturating_sub(GAP as u32).max(1),
+                kb.w.saturating_sub(s.px(GAP as u32)).max(1),
+                kb.h.saturating_sub(s.px(GAP as u32)).max(1),
             )
         }
     }
 }
 
-fn key_rect(kb: &KeyButton) -> MxcfbRect {
-    let (x, y, w, h) = face(kb);
+fn key_rect(kb: &KeyButton, xres: u32) -> MxcfbRect {
+    let (x, y, w, h) = face(kb, Scale::of_width(xres));
     MxcfbRect {
         top: y.max(0) as u32,
         left: x.max(0) as u32,
@@ -279,7 +280,7 @@ fn draw_band(
 /// acknowledgement a tap gets under the finger, ahead of the band refresh at
 /// the far end of the screen.
 fn draw_key(fb: &mut Framebuffer, renderer: &mut TextRenderer, kb: &KeyButton, pressed: bool) {
-    let (x, y, w, h) = face(kb);
+    let (x, y, w, h) = face(kb, Scale::of_width(fb.var.xres));
     let (top, left) = (y.max(0) as u32, x.max(0) as u32);
     fb.fill_rect(top, left, w, h, if pressed { 0x00 } else { 0xFF });
     if !pressed && kb.style == Style::Face {
@@ -296,11 +297,18 @@ fn draw_key(fb: &mut Framebuffer, renderer: &mut TextRenderer, kb: &KeyButton, p
 /// them intact under a press.
 fn draw_strip_chrome(fb: &mut Framebuffer, keys: &[KeyButton]) {
     let xres = fb.var.xres;
-    let top = strip_top(fb.var.xres, fb.var.yres);
-    fb.fill_rect(top, 0, xres, RULE, 0x00);
+    let s = Scale::of_width(xres);
+    let top = strip_top(xres, fb.var.yres);
+    fb.fill_rect(top, 0, xres, s.px(RULE), 0x00);
     for kb in keys.iter().filter(|k| k.style == Style::Zone) {
         if kb.x > 0 {
-            fb.fill_rect(top + 12, kb.x.max(0) as u32, RULE, STRIP_H - 24, 0x00);
+            fb.fill_rect(
+                top + s.px(12),
+                kb.x.max(0) as u32,
+                s.px(RULE),
+                s.px(STRIP_H).saturating_sub(s.px(24)),
+                0x00,
+            );
         }
     }
 }
@@ -384,7 +392,7 @@ pub fn run(
         () => {{
             if let Some(i) = shift_index(&keys) {
                 draw_key(fb, renderer, &keys[i], shift);
-                fb.send_update(key_rect(&keys[i]), WAVEFORM_MODE_DU)?;
+                fb.send_update(key_rect(&keys[i], fb.var.xres), WAVEFORM_MODE_DU)?;
             }
         }};
     }
@@ -395,7 +403,7 @@ pub fn run(
                 if let Some(i) = pressed.take() {
                     let latched = shift && keys[i].key == Key::Shift;
                     draw_key(fb, renderer, &keys[i], latched);
-                    fb.send_update(key_rect(&keys[i]), WAVEFORM_MODE_DU)?;
+                    fb.send_update(key_rect(&keys[i], fb.var.xres), WAVEFORM_MODE_DU)?;
                 }
                 // `pathbar`'s `✕` clears. Past it, a key resolves.
                 if pathbar::clear_hit(x, y, fb.var.xres, !path.is_empty()) {
@@ -446,7 +454,7 @@ pub fn run(
                     && let Some(i) = hit_index(&keys, x, y)
                 {
                     draw_key(fb, renderer, &keys[i], true);
-                    fb.send_update(key_rect(&keys[i]), WAVEFORM_MODE_DU)?;
+                    fb.send_update(key_rect(&keys[i], fb.var.xres), WAVEFORM_MODE_DU)?;
                     pressed = Some(i);
                 }
             }
