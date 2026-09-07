@@ -85,7 +85,7 @@ fn probe_x(o: &mut String) {
         setup.maximum_request_length,
         setup.maximum_request_length as usize * 4
     );
-    // Equal to the line above when BIG-REQUESTS is absent.
+    // `maximum_request_bytes()` equals `maximum_request_length` * 4 without BIG-REQUESTS.
     let _ = writeln!(
         o,
         "maximum_request_bytes()={} (BIG-REQUESTS {})",
@@ -130,7 +130,7 @@ fn probe_x(o: &mut String) {
         }
     }
 
-    // A lab126 or eink-specific name here is a refresh mechanism.
+    // `list_extensions` names any lab126 or eink refresh mechanism.
     let _ = writeln!(o, "\n[extensions]");
     match conn
         .list_extensions()
@@ -227,7 +227,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     };
     let _ = conn.create_gc(gc, win, &CreateGCAux::new());
 
-    // Alternating black and white bands, read off the panel by eye.
+    // `shade` alternates 0x00 and 0xFF across the bands.
     for (label, limit) in [
         ("256KB", 256 * 1024usize),
         ("1MB", 1024 * 1024),
@@ -261,7 +261,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
             }
             y += h;
         }
-        // The reply lands once the server has processed every request above.
+        // `get_input_focus` replies once the server has processed the requests above.
         let sync = conn
             .get_input_focus()
             .map_err(|e| e.to_string())
@@ -276,7 +276,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
                 Err(e) => e.to_string(),
             }
         );
-        // Asynchronous protocol errors land here.
+        // `poll_for_event` delivers asynchronous protocol errors.
         while let Ok(Some(ev)) = conn.poll_for_event() {
             if let x11rb::protocol::Event::Error(e) = ev {
                 let _ = writeln!(o, "  {label}: X error {e:?}");
@@ -290,9 +290,8 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     let _ = conn.flush();
 }
 
-/// Paint full-screen against a burst of small updates, in three phases. X
-/// reports success in each; the panel is the readout, and every phase prints
-/// what it painted.
+/// Paint full-screen against a burst of small updates, in three phases. Every
+/// phase prints what it painted.
 #[allow(clippy::too_many_arguments)]
 fn probe_supersession(
     conn: &impl Connection,
@@ -325,7 +324,7 @@ fn probe_supersession(
         );
     };
 
-    // 24 small squares scattered down the screen, mimicking the per-cover burst.
+    // 24 squares of `S` down the screen.
     let paint_squares = |shade: u8| {
         const S: usize = 120;
         for i in 0..24usize {
@@ -502,7 +501,7 @@ fn probe_backing_store(o: &mut String) {
             );
         };
 
-        // Black, then white with squares.
+        // `put` paints black, then white with squares.
         put(0x00, xres, yres, 0, 0);
         sync(&conn);
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -538,8 +537,7 @@ fn probe_backing_store(o: &mut String) {
 }
 
 /// Paint known squares, read `/dev/fb0` back, and print per-square coverage
-/// with the dark rows of each. A stride error drifts those rows sideways; a
-/// dropped update cuts a square on a clean horizontal edge.
+/// with the dark rows of each.
 fn probe_fb_readback(o: &mut String) {
     let _ = writeln!(o, "\n[framebuffer readback]");
 
@@ -616,7 +614,7 @@ fn probe_fb_readback(o: &mut String) {
             .and_then(|c| c.reply().map(|_| ()).map_err(|e| e.to_string()));
     };
 
-    // A white field, then squares on a known grid.
+    // `white` fills the field; `squares` holds the grid.
     const S: usize = 120;
     let squares: Vec<(usize, usize)> = (0..24)
         .map(|i| {
@@ -661,7 +659,7 @@ fn probe_fb_readback(o: &mut String) {
     sync();
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // Both pages: virtual height is 2x and the live one is not exposed.
+    // `page_bytes` covers one of the two pages `fb_h` spans.
     let page_bytes = fb_w * yres * fb_bpp;
     for page in 0..2usize {
         let Some(buf) = read_fb_page(page * page_bytes, page_bytes) else {
@@ -672,7 +670,7 @@ fn probe_fb_readback(o: &mut String) {
             let idx = y * fb_w * fb_bpp + x * fb_bpp;
             buf.get(idx).is_some_and(|v| *v < 0x40)
         };
-        // Coverage per square, plus which of its rows are dark.
+        // `summary` holds coverage per square and its dark rows.
         let mut summary = Vec::new();
         for (i, (x, y)) in squares.iter().enumerate() {
             let mut dark_px = 0usize;
@@ -749,7 +747,7 @@ fn probe_eink_paths(o: &mut String) {
             }
         );
     }
-    // fb0's own geometry, separate from what X reports.
+    // fb0's own geometry.
     for p in [
         "/sys/class/graphics/fb0/virtual_size",
         "/sys/class/graphics/fb0/bits_per_pixel",

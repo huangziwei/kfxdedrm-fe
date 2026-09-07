@@ -1,6 +1,6 @@
 //! [`Framebuffer`] — a fullscreen X11 window over a packed-RGB backing at
 //! [`CH`] bytes per pixel, with [`Framebuffer::send_update`] presenting dirty
-//! rows in the server's wire format. Drawing is identity; `_waveform` is ignored.
+//! rows in the server's wire format at identity. `_waveform` is ignored.
 
 use std::path::Path;
 
@@ -27,7 +27,7 @@ pub const WAVEFORM_MODE_GC16: u32 = 2;
 /// Bytes per pixel in `backing`: packed RGB, no alpha.
 pub const CH: usize = 3;
 
-/// Rec. 601 luma of `r`, `g`, `b`. The weights sum to 256.
+/// Rec. 601 luma of `r`, `g`, `b`. 77, 150 and 29 sum to 256.
 #[inline]
 fn luma(r: u8, g: u8, b: u8) -> u8 {
     ((r as u32 * 77 + g as u32 * 150 + b as u32 * 29) >> 8) as u8
@@ -211,8 +211,7 @@ impl Framebuffer {
             .context("create_gc")?;
         conn.flush().context("flush after map")?;
 
-        // `get_geometry` against root `xres`/`yres`: a smaller or offset window
-        // clips edge-anchored drawing.
+        // `get_geometry` against root `xres`/`yres`.
         match conn
             .get_geometry(win)
             .map_err(|e| e.to_string())
@@ -260,13 +259,13 @@ impl Framebuffer {
     }
 
     /// Single gray-pixel write in screen coords (0=black, 255=white), stored as
-    /// `(v,v,v)`. Out-of-range silently no-ops.
+    /// `(v,v,v)`, no-op out of range.
     #[inline]
     pub fn put_pixel(&mut self, x: i32, y: i32, value: u8) {
         self.put_pixel_rgb(x, y, [value, value, value]);
     }
 
-    /// Single color-pixel write in screen coords, `rgb`. Out-of-range no-ops.
+    /// Single color-pixel write in screen coords, `rgb`, no-op out of range.
     #[inline]
     pub fn put_pixel_rgb(&mut self, x: i32, y: i32, rgb: [u8; 3]) {
         if x < 0 || y < 0 || x >= self.var.xres as i32 || y >= self.var.yres as i32 {
@@ -375,7 +374,7 @@ impl Framebuffer {
         self.backing.clone()
     }
 
-    /// Replace `backing` with `snap`. No-op on a length mismatch.
+    /// Replace `backing` with `snap`, no-op on a length mismatch.
     pub fn restore_backing(&mut self, snap: Vec<u8>) {
         if snap.len() == self.backing.len() {
             self.backing = snap;
@@ -394,7 +393,7 @@ impl Framebuffer {
 
 impl Drop for Framebuffer {
     fn drop(&mut self) {
-        // `destroy_window` hands the screen back to the WM. Best effort.
+        // `destroy_window` hands the screen back to the WM.
         let _ = self.conn.destroy_window(self.win);
         let _ = self.conn.flush();
     }
