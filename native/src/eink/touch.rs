@@ -100,8 +100,9 @@ pub enum TouchEvent {
 }
 
 /// Horizontal-swipe direction, classified from one touch stroke's start→end
-/// vector (see [`classify_swipe`]). These map to page turns — the page-flip
-/// affordance the buttonless Colorsoft can't get from bezel keys.
+/// vector (see [`classify_swipe`]). `crate::app` pages the grid on these, which
+/// is the paging every device without bezel keys has — the Paperwhites, the
+/// Colorsoft and the basic Kindles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwipeDir {
     /// Right-to-left drag → next page (the current page slides off to the left).
@@ -447,8 +448,13 @@ fn opposite_corners(ax: u32, ay: u32, bx: u32, by: u32, w: u32, h: u32) -> bool 
 /// Only the Down→Up endpoints are needed; the path is not tracked.
 /// A swipe must travel at least `xres / 5` horizontally **and** be at least
 /// twice as horizontal as vertical (≈ within 27° of horizontal); that keeps
-/// taps (tiny `dx`) and vertical drifts from flipping pages. `xres` scales the
-/// distance floor so the threshold is resolution-independent across panels.
+/// taps (tiny `dx`) and vertical drifts from flipping pages.
+///
+/// The floor is a fifth of the panel, not a physical distance: a fifth of a 6"
+/// panel is about 0.7" and a fifth of the Scribe's is about 1.2", so the same
+/// gesture is a longer reach on the bigger screen. It stays well above
+/// `app::ARM_SLOP_PX`, which is what keeps a page turn from also arming a
+/// decrypt.
 pub fn classify_swipe(x0: u32, y0: u32, x1: u32, y1: u32, xres: u32) -> Option<SwipeDir> {
     let dx = x1 as i32 - x0 as i32;
     let dy = y1 as i32 - y0 as i32;

@@ -1,6 +1,8 @@
 //! [`run`]: a paginated grid of `[crate::scan::Book]`, with
 //! [`crate::ui::configmenu`] as a blocking overlay. A held cover runs
-//! [`decrypt_one`]; the toolbar runs [`decrypt_all`].
+//! [`decrypt_one`]; the toolbar runs [`decrypt_all`]. Pages turn on a swipe
+//! across the grid, on `ui::pager`'s two nav halves, and on the bezel keys
+//! where the device has them.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -16,7 +18,7 @@ use crate::eink;
 use crate::eink::buttons::{Buttons, PageButton};
 use crate::eink::fb::{Framebuffer, MxcfbRect, WAVEFORM_MODE_DU, WAVEFORM_MODE_GC16};
 use crate::eink::input::{Input, InputEvent};
-use crate::eink::touch::{Touch, TouchEvent};
+use crate::eink::touch::{SwipeDir, Touch, TouchEvent, classify_swipe};
 use crate::engine::{self, Engine};
 use crate::font;
 use crate::install::{self, selfupdate};
@@ -38,7 +40,9 @@ const FONT_PX: f32 = 32.0;
 /// Hold on a cover, within [`ARM_SLOP_PX`] of the landing point, that runs
 /// [`decrypt_one`]. A shorter press does nothing.
 const ARM_THRESHOLD: Duration = Duration::from_millis(1000);
-/// Drift on either axis, in user-visible px, that cancels an [`Armed`].
+/// Drift on either axis that cancels an [`Armed`], a design pixel: a hold that
+/// wanders this far is a drag, and past `classify_swipe`'s floor it is a page
+/// turn. The two never collide because the floor is the larger of the pair.
 const ARM_SLOP_PX: u32 = 40;
 /// `grid::draw_arm_cue` holds the panel before the first banner paints.
 const ARM_DWELL: Duration = Duration::from_millis(250);
@@ -69,6 +73,11 @@ fn full_rect(fb: &Framebuffer) -> MxcfbRect {
         width: fb.var.xres,
         height: fb.var.yres,
     }
+}
+
+/// [`ARM_SLOP_PX`] on a panel `fb_xres` wide.
+fn arm_slop(fb_xres: u32) -> u32 {
+    crate::ui::scale::Scale::of_width(fb_xres).px(ARM_SLOP_PX)
 }
 
 /// Refresh rect for one grid cell.
@@ -1120,6 +1129,8 @@ pub fn run() -> anyhow::Result<()> {
     repaint!();
 
     let mut armed: Option<Armed> = None;
+    // Where the stroke in flight landed, for [`classify_swipe`] at its lift.
+    let mut down: Option<(u32, u32)> = None;
 
     loop {
         // A held finger emits near-continuous jitter, keeping the touch fd
@@ -1133,16 +1144,21 @@ pub fn run() -> anyhow::Result<()> {
                 // cell, so it arms nothing and the new layout is drawn instead.
                 if input.follow_orientation_now() {
                     relayout!();
-                    armed = None;
+                    (armed, down) = (None, None);
                     repaint!();
                     continue;
                 }
+                // Every press above the strip starts a possible swipe, cover
+                // or no cover: the gaps between cells and the margins around
+                // them page as readily as a cover does.
+                let on_strip =
+                    pager::hit(x, y, fb.var.xres, fb.var.yres, total_pages, pending(&books))
+                        .is_some();
+                down = (!on_strip).then_some((x, y));
+
                 // `grid::outline_cell` marks the press. [`ARM_THRESHOLD`]
                 // decides the rest.
-                if pager::hit(x, y, fb.var.xres, fb.var.yres, total_pages, pending(&books))
-                    .is_none()
-                    && let Some(slot) = layout.cell_at_tap(x, y, books.len())
-                {
+                if !on_strip && let Some(slot) = layout.cell_at_tap(x, y, books.len()) {
                     let idx = page * layout.page_size() + slot;
                     let (cx, cy) = layout.cell_xy(slot);
                     if idx < books.len() && cx >= 0 && cy >= 0 {
@@ -1159,10 +1175,41 @@ pub fn run() -> anyhow::Result<()> {
             }
 
             InputEvent::Touch(TouchEvent::Up { x, y }) => {
+                // A stroke across the grid pages it, beside `ui::pager`'s two
+                // nav halves — the narrowest control on a 6" panel, and without
+                // this the only one a bezel-less device can page with. A swipe
+                // is a drag, so it has already cancelled any [`Armed`] below.
+                let swipe = down
+                    .take()
+                    .and_then(|(x0, y0)| classify_swipe(x0, y0, x, y, fb.var.xres));
+                if let Some(dir) = swipe {
+                    let outlined = armed.take();
+                    let turned = match dir {
+                        SwipeDir::Next if page + 1 < total_pages => {
+                            page += 1;
+                            true
+                        }
+                        SwipeDir::Prev if page > 0 => {
+                            page -= 1;
+                            true
+                        }
+                        _ => false,
+                    };
+                    if turned {
+                        repaint!();
+                    } else if let Some(a) = outlined {
+                        // A swipe past the last page still has to take the
+                        // outline the press left on the cover it began over.
+                        redraw_cell!(a.slot);
+                    }
+                    continue;
+                }
+
                 // `Tick` takes `armed` at [`ARM_THRESHOLD`]. `armed` set here
                 // marks a release before it.
                 if let Some(a) = armed.take() {
-                    if x.abs_diff(a.at.0) > ARM_SLOP_PX || y.abs_diff(a.at.1) > ARM_SLOP_PX {
+                    let slop = arm_slop(fb.var.xres);
+                    if x.abs_diff(a.at.0) > slop || y.abs_diff(a.at.1) > slop {
                         redraw_cell!(a.slot);
                     } else {
                         log(format!("short tap ({:?})", a.down_at.elapsed()));
@@ -1290,6 +1337,9 @@ pub fn run() -> anyhow::Result<()> {
             }
 
             InputEvent::Touch(TouchEvent::Screenshot) => {
+                // Two fingers, so the stroke either was holding is neither a
+                // press nor a swipe.
+                (armed, down) = (None, None);
                 let _ = eink::screenshot::capture(&mut fb);
             }
 
@@ -1326,7 +1376,8 @@ pub fn run() -> anyhow::Result<()> {
                     // panel flash on every mis-swipe costs more than the
                     // outline.
                     let (px, py) = input.touch_pos();
-                    if px.abs_diff(a.at.0) > ARM_SLOP_PX || py.abs_diff(a.at.1) > ARM_SLOP_PX {
+                    let slop = arm_slop(fb.var.xres);
+                    if px.abs_diff(a.at.0) > slop || py.abs_diff(a.at.1) > slop {
                         redraw_cell!(a.slot);
                         continue;
                     }
@@ -1390,7 +1441,7 @@ pub fn run() -> anyhow::Result<()> {
                 // erases `grid::outline_cell`.
                 let pump = fb.pump_events();
                 if let Some(covered) = pump.covered {
-                    armed = None;
+                    (armed, down) = (None, None);
                     input.set_covered(covered);
                 }
                 input.retake();
@@ -1405,7 +1456,7 @@ pub fn run() -> anyhow::Result<()> {
                     // Uncovered: drawn without an `Expose` to ask for it.
                     Some(false) => repaint!(),
                     None if turned || pump.resized.is_some() || pump.repaint => {
-                        armed = None;
+                        (armed, down) = (None, None);
                         repaint!();
                     }
                     None => {}
@@ -1418,6 +1469,42 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A swipe always outruns the hold's slop, so the gesture that pages can
+    /// never also arm a decrypt: `classify_swipe` wants `min_dx` of travel, and
+    /// [`ARM_SLOP_PX`] of drift has cancelled the [`Armed`] well before that.
+    #[test]
+    fn a_swipe_cancels_the_hold_long_before_it_pages() {
+        for xres in [600u32, 758, 1072, 1236, 1264, 1860] {
+            let slop = arm_slop(xres);
+            // The shortest stroke `classify_swipe` will call a swipe.
+            let min_dx = (1..=xres)
+                .find(|dx| classify_swipe(*dx, 0, 0, 0, xres).is_some())
+                .expect("some stroke pages");
+            assert!(min_dx > slop, "{xres}: swipe {min_dx} <= slop {slop}");
+        }
+    }
+
+    /// A stroke short of the floor, and one too vertical, page nothing.
+    #[test]
+    fn only_a_long_flat_stroke_pages() {
+        let xres = 1264;
+        assert_eq!(
+            classify_swipe(900, 800, 300, 820, xres),
+            Some(SwipeDir::Next)
+        );
+        assert_eq!(
+            classify_swipe(300, 800, 900, 790, xres),
+            Some(SwipeDir::Prev)
+        );
+        // Inside the slop: a hold, not a swipe.
+        assert_eq!(
+            classify_swipe(600, 800, 600 + arm_slop(xres), 800, xres),
+            None
+        );
+        // Long but mostly down the screen.
+        assert_eq!(classify_swipe(600, 300, 540, 900, xres), None);
+    }
 
     #[test]
     fn a_batch_that_ran_to_the_end_reports_no_remainder() {
