@@ -109,7 +109,11 @@ fn draw_line(
     *y += lh;
 }
 
-fn draw(fb: &mut Framebuffer, renderer: &mut TextRenderer, reason: Missing) -> anyhow::Result<()> {
+pub fn draw(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    reason: Missing,
+) -> anyhow::Result<()> {
     fb.fill_rect(0, 0, fb.var.xres, fb.var.yres, 0xFF);
 
     let lh = renderer.line_height().max(1);
@@ -213,12 +217,25 @@ pub fn run(
             }
             InputEvent::Tick => {
                 // This is the first screen the app draws and it blocks until
-                // answered, so a rotation here is followed nowhere else.
+                // answered, so a cover or a rotation here is followed nowhere
+                // else.
                 let pump = fb.pump_events();
+                if let Some(covered) = pump.covered {
+                    input.set_covered(covered);
+                }
+                input.retake();
                 if pump.resized.is_some() {
                     input.set_size(fb.var.xres, fb.var.yres);
                 }
-                if input.follow_orientation() || pump.resized.is_some() || pump.repaint {
+                let turned = input.follow_orientation();
+                let redraw = match pump.covered {
+                    // Covered: the panel belongs to the window over this one.
+                    Some(true) => false,
+                    // Uncovered: drawn without an `Expose` to ask for it.
+                    Some(false) => true,
+                    None => turned || pump.resized.is_some() || pump.repaint,
+                };
+                if redraw {
                     draw(fb, renderer, reason)?;
                 }
             }

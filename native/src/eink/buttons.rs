@@ -50,6 +50,10 @@ pub struct Buttons {
     /// Whether the `EVIOCGRAB` succeeded. If it didn't, the framework still
     /// sees presses (UI may tear); [`Buttons::read_one`] reads them either way.
     grabbed: bool,
+    /// Whether [`Buttons::open`]'s `EVIOCGRAB` took. Read by [`Buttons::retake`].
+    exclusive: bool,
+    /// [`Buttons::set_covered`]'s state: no grab, no [`Buttons::read_one`].
+    covered: bool,
     /// Current framework orientation. On `Down` (180° flip) the physical top/
     /// bottom buttons swap sides, and `Prev`/`Next` swap with them to hold
     /// under the same thumb. Updated at runtime by [`Buttons::set_orientation`].
@@ -72,6 +76,8 @@ impl Buttons {
         Ok(Some(Self {
             file,
             grabbed,
+            exclusive: grabbed,
+            covered: false,
             orientation: Orientation::Up,
         }))
     }
@@ -87,6 +93,31 @@ impl Buttons {
         self.orientation = orientation;
     }
 
+    /// Drops `EVIOCGRAB` and sets `covered` while another window covers this
+    /// app's; takes the grab back when that window goes. A held grab under the
+    /// passcode or the ads screen keeps the bezel keys from reaching them.
+    pub fn set_covered(&mut self, covered: bool) {
+        if covered == self.covered {
+            return;
+        }
+        self.covered = covered;
+        let want = i32::from(!covered);
+        let ok = unsafe { libc::ioctl(self.file.as_raw_fd(), EVIOCGRAB as _, want) } == 0;
+        self.grabbed = ok && !covered;
+        eprintln!("buttons: covered={covered} grabbed={}", self.grabbed);
+    }
+
+    /// Retakes `EVIOCGRAB` where `exclusive` holds and `grabbed` does not.
+    pub fn retake(&mut self) {
+        if self.grabbed || self.covered || !self.exclusive {
+            return;
+        }
+        self.grabbed = unsafe { libc::ioctl(self.file.as_raw_fd(), EVIOCGRAB as _, 1) } == 0;
+        if self.grabbed {
+            eprintln!("buttons: EVIOCGRAB retaken");
+        }
+    }
+
     /// One event record. The caller polls first, leaving a record available
     /// and this won't block. Returns `Some` only on a key *press* (`value==1`)
     /// of a mapped page key; `None` for releases, autorepeat (`value==2`),
@@ -99,6 +130,10 @@ impl Buttons {
         let type_ = u16::from_ne_bytes([buf[8], buf[9]]);
         let code = u16::from_ne_bytes([buf[10], buf[11]]);
         let value = i32::from_ne_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        // Covered: the record is read and dropped.
+        if self.covered {
+            return Ok(None);
+        }
         if type_ == EV_KEY && value == 1 {
             let btn = match code {
                 // On the KOA2 the *top* button emits KEY_PAGEUP and the

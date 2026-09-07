@@ -16,11 +16,15 @@
 //! `scan`/`scantruncate` write into [`EXTENSION_DIR`]. `dedrm_all` carries no
 //! per-book progress.
 //!
-//! **The engine does not read the out-folder argument.** It parses
-//! `dedrm <book>` and writes to `config::OUT_DIR` whatever it is handed, which
-//! is why that is a constant and not a setting. [`Engine::decrypt`] passes the
-//! argument regardless, so a build that does read it writes to the same place
-//! and needs no change here.
+//! The out-folder argument defaults to `config::DEFAULT_OUT_DIR` and reaches
+//! one non-recursive `mkdir`, so [`Engine::decrypt`] is handed a path whose
+//! parents exist.
+//!
+//! **A released build may not read that argument at all**, writing to the
+//! default wherever it is pointed. [`output_path`] looks where
+//! `Config::out_dir` says, so against such a build a book decrypts and then
+//! still reads as pending. `Selected Out folder:` in the engine's own output is
+//! what says which build is installed.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -144,9 +148,9 @@ impl Engine {
 
     /// `<exe> dedrm <book> <out_dir>`.
     ///
-    /// `out_dir` rides every call and the engine ignores it — see this
-    /// module's header. Callers pass `config::OUT_DIR`, which is where it
-    /// writes anyway, and it creates that folder itself.
+    /// `out_dir` rides every call, and the engine creates it with one
+    /// non-recursive `mkdir` — see this module's header for the build that
+    /// ignores the argument.
     pub fn decrypt(&self, book: &Path, out_dir: &Path) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("dedrm").arg(book).arg(out_dir);

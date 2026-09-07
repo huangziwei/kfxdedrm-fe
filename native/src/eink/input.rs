@@ -49,6 +49,8 @@ pub struct Input {
     orientation: Orientation,
     /// When `orientation` was read; `None` asks for a read at once.
     checked: Option<Instant>,
+    /// [`Input::set_covered`]'s state.
+    covered: bool,
 }
 
 impl Input {
@@ -58,6 +60,7 @@ impl Input {
             buttons,
             orientation: Orientation::Up,
             checked: None,
+            covered: false,
         }
     }
 
@@ -71,14 +74,41 @@ impl Input {
         }
     }
 
+    /// [`Touch::set_covered`] and [`Buttons::set_covered`] over both devices,
+    /// dropping the `EVIOCGRAB` that would otherwise leave the passcode and
+    /// the ads screen drawn with nothing able to reach them.
+    pub fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
+        if !covered {
+            self.checked = None;
+        }
+        self.touch.set_covered(covered);
+        if let Some(buttons) = self.buttons.as_mut() {
+            buttons.set_covered(covered);
+        }
+    }
+
+    /// [`Touch::retake`] and [`Buttons::retake`] over both devices, for a grab
+    /// another reader held when this app wanted it.
+    pub fn retake(&mut self) {
+        self.touch.retake();
+        if let Some(buttons) = self.buttons.as_mut() {
+            buttons.retake();
+        }
+    }
+
     /// Re-reads [`Orientation::detect`] past [`ORIENT_POLL`] and applies a
-    /// change to both devices, answering whether one landed.
+    /// change to both devices, answering whether one landed. A covered
+    /// [`Input`] reads nothing and takes the next read on the uncover.
     ///
     /// This is the one place the framework orientation is read at runtime: a
     /// loop that blocks without calling it keeps mapping touches to the frame
     /// the panel was last drawn in. The `true` it answers is the caller's cue
     /// to rebuild its layout and repaint.
     pub fn follow_orientation(&mut self) -> bool {
+        if self.covered {
+            return false;
+        }
         if let Some(at) = self.checked
             && at.elapsed() < ORIENT_POLL
         {

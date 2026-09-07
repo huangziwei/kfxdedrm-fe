@@ -146,6 +146,10 @@ pub struct Touch {
     /// this device — which is *why* we recognize the screenshot gesture
     /// ourselves: the framework's recognizer is starved while we hold this.
     grabbed: bool,
+    /// Whether [`Touch::open`]'s `EVIOCGRAB` took. Read by [`Touch::retake`].
+    exclusive: bool,
+    /// [`Touch::set_covered`]'s state: no grab, no [`Touch::next_event`].
+    covered: bool,
     /// Same orientation the framebuffer was opened with. We mirror the
     /// raw touch coords by the same amount so caller-visible coords match
     /// what's drawn on screen.
@@ -202,6 +206,8 @@ impl Touch {
             screenshot_latched: false,
             suppress_next_up: false,
             grabbed,
+            exclusive: grabbed,
+            covered: false,
             orientation,
             fb_xres,
             fb_yres,
@@ -215,10 +221,10 @@ impl Touch {
         self.file.as_raw_fd()
     }
 
-    /// Update the orientation used to transform raw coords. The main loop calls
-    /// this when it detects the framework rotated (the X server rotates the
-    /// display, but raw evdev coords are panel-fixed), so taps keep matching
-    /// what's drawn after a 180° flip.
+    /// Update the orientation used to transform raw coords.
+    /// `Input::follow_orientation` calls this on a rotation (the X server
+    /// rotates the display, but raw evdev coords are panel-fixed), so taps keep
+    /// matching what's drawn after a 180° flip.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
     }
@@ -230,6 +236,50 @@ impl Touch {
     pub fn set_size(&mut self, fb_xres: u32, fb_yres: u32) {
         self.fb_xres = fb_xres;
         self.fb_yres = fb_yres;
+    }
+
+    /// Drops `EVIOCGRAB` and sets `covered` while another window covers this
+    /// app's; takes the grab back when that window goes.
+    ///
+    /// The grab is exclusive, so holding it under the passcode or the ads
+    /// screen leaves those windows drawn with nothing able to reach them —
+    /// no code entry, no swipe to unlock.
+    pub fn set_covered(&mut self, covered: bool) {
+        if covered == self.covered {
+            return;
+        }
+        self.covered = covered;
+        let want = i32::from(!covered);
+        let ok = unsafe { libc::ioctl(self.file.as_raw_fd(), EVIOCGRAB as _, want) } == 0;
+        self.grabbed = ok && !covered;
+        eprintln!(
+            "touch: covered={covered} grabbed={} ioctl={ok}",
+            self.grabbed
+        );
+        self.forget_stroke();
+    }
+
+    /// Retakes `EVIOCGRAB` where `exclusive` holds and `grabbed` does not.
+    pub fn retake(&mut self) {
+        if self.grabbed || self.covered || !self.exclusive {
+            return;
+        }
+        self.grabbed = unsafe { libc::ioctl(self.file.as_raw_fd(), EVIOCGRAB as _, 1) } == 0;
+        if self.grabbed {
+            eprintln!("touch: EVIOCGRAB retaken — exclusive");
+        }
+    }
+
+    /// Clears the pending `Down`/`Up` boundary and both slots, so a stroke
+    /// split across a cover boundary raises no half of itself.
+    fn forget_stroke(&mut self) {
+        self.down_pending = false;
+        self.up_pending = false;
+        self.cur_slot = 0;
+        self.slot0_active = false;
+        self.slot1_active = false;
+        self.screenshot_latched = false;
+        self.suppress_next_up = false;
     }
 
     /// Drain currently-available events (non-blocking). Returns `Some` when a
@@ -247,6 +297,10 @@ impl Touch {
         let mut buf = [0u8; EVENT_BYTES];
         loop {
             match self.file.read(&mut buf) {
+                // Covered: the record is read and dropped. A failed ungrab
+                // leaves this device ours, so the drop is what keeps a
+                // passcode tap from also reaching the grid underneath.
+                Ok(EVENT_BYTES) if self.covered => continue,
                 Ok(EVENT_BYTES) => {}
                 // evdev hands back whole 16-byte records; 0 or a short read
                 // means nothing more is buffered right now.

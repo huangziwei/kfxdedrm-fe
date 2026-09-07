@@ -80,8 +80,8 @@ fn cell_rect(cell_x: i32, cell_y: i32, cell_h: u32) -> MxcfbRect {
     }
 }
 
-/// A cover under a finger, pending [`ARM_THRESHOLD`]. An earlier release
-/// draws the hold hint.
+/// A cover under a finger, pending [`ARM_THRESHOLD`]. A lift before that
+/// draws the hold hint instead.
 struct Armed {
     /// Cell index on the current page.
     slot: usize,
@@ -129,7 +129,7 @@ fn load_cover(book: &Book) -> Option<DynamicImage> {
 
 /// One page of cells, [`ui::header`] and [`ui::pager`].
 #[allow(clippy::too_many_arguments)]
-fn draw_page(
+pub fn draw_page(
     fb: &mut Framebuffer,
     renderer: &mut TextRenderer,
     books: &[Book],
@@ -258,6 +258,21 @@ fn decrypt_input_event(fb: &mut Framebuffer, ev: InputEvent) {
     }
 }
 
+/// The `Tick` of a working loop: drains the X queue so a window put over this
+/// app's mid-run still reaches [`Input::set_covered`], and retakes the grab
+/// when it goes.
+///
+/// A decrypt runs for minutes, which is when the screensaver and the passcode
+/// arrive. Nothing is drawn here — the banner these loops keep on the panel is
+/// still the banner to show, and each redraws its own on its own schedule.
+fn working_tick(fb: &mut Framebuffer, input: &mut Input) {
+    let pump = fb.pump_events();
+    if let Some(covered) = pump.covered {
+        input.set_covered(covered);
+    }
+    input.retake();
+}
+
 /// Holds the panel for `linger`, servicing `input` throughout.
 ///
 /// `Touch` holds an `EVIOCGRAB`, and `TouchEvent::Screenshot` queues on that
@@ -266,7 +281,7 @@ fn hold(fb: &mut Framebuffer, input: &mut Input, linger: Duration) -> anyhow::Re
     let until = Instant::now() + linger;
     while Instant::now() < until {
         match input.next_deadline(Some(until))? {
-            InputEvent::Tick => {}
+            InputEvent::Tick => working_tick(fb, input),
             ev => decrypt_input_event(fb, ev),
         }
     }
@@ -371,7 +386,7 @@ fn convert_outputs(
                     Err(e) => break Err(e),
                 }
                 match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
-                    InputEvent::Tick => {}
+                    InputEvent::Tick => working_tick(fb, input),
                     // Same contract as the engine wait: the child runs to its
                     // own exit and the batch ends after this book.
                     InputEvent::Touch(TouchEvent::Up { x, y })
@@ -557,7 +572,7 @@ fn run_engine(
     let mut latest: Option<String> = None;
     let status = loop {
         match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
-            InputEvent::Tick => {}
+            InputEvent::Tick => working_tick(fb, input),
             ev => decrypt_input_event(fb, ev),
         }
         if let Some(rx) = lines.as_ref() {
@@ -637,34 +652,57 @@ fn decrypt_all(
                 book.path.display()
             ));
         } else {
-            let status = match eng.decrypt(&book.path, out_dir).spawn() {
-                Ok(mut child) => loop {
-                    match child.try_wait() {
-                        Ok(Some(s)) => break Ok(s),
-                        Ok(None) => {}
-                        Err(e) => break Err(e),
-                    }
-                    match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
-                        InputEvent::Tick => {}
-                        // `child` runs to its own exit; the loop ends after it.
-                        InputEvent::Touch(TouchEvent::Up { x, y })
-                            if !stopping && toast::contains(stop_rect, x, y) =>
-                        {
-                            stopping = true;
-                            log("batch: stop requested");
-                            // `draw_progress` drops the button, marking the tap.
-                            let rect = toast::draw_progress(
-                                fb,
-                                renderer,
-                                "Stopping after this book…",
-                                i,
-                                total,
-                            );
-                            fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+            // Piped and drained, as in [`run_engine`]. The engine writes
+            // progress to stdout; inheriting this process's leaves it writing
+            // down a pipe nothing reads, and it dies of `SIGPIPE` partway
+            // through the book.
+            let status = match eng
+                .decrypt(&book.path, out_dir)
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    let lines = child.stdout.take().map(read_lines);
+                    let status = loop {
+                        match child.try_wait() {
+                            Ok(Some(s)) => break Ok(s),
+                            Ok(None) => {}
+                            Err(e) => break Err(e),
                         }
-                        ev => decrypt_input_event(fb, ev),
+                        if let Some(rx) = lines.as_ref() {
+                            while let Ok(msg) = rx.try_recv() {
+                                log(format!("engine: {msg}"));
+                            }
+                        }
+                        match input.next_deadline(Some(Instant::now() + ENGINE_POLL))? {
+                            InputEvent::Tick => working_tick(fb, input),
+                            // `child` runs to its own exit; the loop ends after it.
+                            InputEvent::Touch(TouchEvent::Up { x, y })
+                                if !stopping && toast::contains(stop_rect, x, y) =>
+                            {
+                                stopping = true;
+                                log("batch: stop requested");
+                                // `draw_progress` drops the button, marking the tap.
+                                let rect = toast::draw_progress(
+                                    fb,
+                                    renderer,
+                                    "Stopping after this book…",
+                                    i,
+                                    total,
+                                );
+                                fb.send_update(rect, WAVEFORM_MODE_GC16)?;
+                            }
+                            ev => decrypt_input_event(fb, ev),
+                        }
+                    };
+                    // Lines buffered between the last drain and the exit.
+                    if let Some(rx) = lines {
+                        while let Ok(msg) = rx.try_recv() {
+                            log(format!("engine: {msg}"));
+                        }
                     }
-                },
+                    status
+                }
                 Err(e) => Err(e),
             };
 
@@ -1337,19 +1375,31 @@ pub fn run() -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Nothing else drains the X queue, so a relayout and an
-                // `Expose` are both noticed here. Either, and a rotation,
-                // rebuild the grid against the size now being drawn.
+                // Nothing else drains the X queue, so a cover, a relayout and
+                // an `Expose` are all noticed here. Any of them, and a
+                // rotation, take `armed` with them: the full repaint below
+                // erases `grid::outline_cell`.
                 let pump = fb.pump_events();
+                if let Some(covered) = pump.covered {
+                    armed = None;
+                    input.set_covered(covered);
+                }
+                input.retake();
                 let turned = input.follow_orientation();
                 if turned || pump.resized.is_some() {
                     input.set_size(fb.var.xres, fb.var.yres);
                     relayout!();
                 }
-                if turned || pump.resized.is_some() || pump.repaint {
-                    // The full repaint takes `grid::outline_cell` with it.
-                    armed = None;
-                    repaint!();
+                match pump.covered {
+                    // Covered: the panel belongs to the window over this one.
+                    Some(true) => {}
+                    // Uncovered: drawn without an `Expose` to ask for it.
+                    Some(false) => repaint!(),
+                    None if turned || pump.resized.is_some() || pump.repaint => {
+                        armed = None;
+                        repaint!();
+                    }
+                    None => {}
                 }
             }
         }

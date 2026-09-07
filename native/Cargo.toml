@@ -15,6 +15,12 @@ path = "src/lib.rs"
 name = "kfxdedrm-fe-native"
 path = "src/main.rs"
 
+[[bin]]
+# Host-only: renders every screen to a PNG with no Kindle behind it. Never
+# shipped — `build.sh` names the binary above and copies that one alone.
+name = "preview"
+path = "src/bin/preview/main.rs"
+
 [dependencies]
 # open/ioctl on /dev/fb0 and the evdev nodes. No C build script.
 libc = "0.2"

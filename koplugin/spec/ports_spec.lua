@@ -219,7 +219,7 @@ local function variant(name, code)
 end
 
 -- What is left after unpacking a zip whose hard-float build a device cannot
--- start: the name `Convert.locate` used to look for is not there.
+-- start: the plain name `Convert.locate` tries first is not there.
 local armsf = variant("bokai-armsf", 0)
 eq("a soft-float-only install still resolves", Convert.locateIn(ABI), armsf)
 -- Both installed, which is every install: the probe, not the name, decides.

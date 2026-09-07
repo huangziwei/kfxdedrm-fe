@@ -194,7 +194,7 @@ fn a_book_missing_a_conversion_is_not_done_yet() {
 #[test]
 fn done_is_judged_against_the_output_folder_it_is_given() {
     // `Book::done` tracks `scan::scan_in`'s out folder, which on the device is
-    // `config::OUT_DIR`.
+    // `Config::out_dir`.
     let t = Tree::new("outdir");
     let items = t.dir("Items01");
     let out = t.dir("out");

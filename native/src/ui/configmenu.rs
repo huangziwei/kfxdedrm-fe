@@ -366,6 +366,24 @@ fn title_line_height(renderer: &mut TextRenderer) -> u32 {
 /// row, mutating `cfg` in place.
 ///
 /// `folders` and `installed` are fixed for the life of the panel; the taps
+/// The whole page painted into `fb`, answering the [`Page`] it drew and the
+/// [`Layout`] it drew it at. [`run`]'s repaint, without the loop around it.
+pub fn draw(
+    fb: &mut Framebuffer,
+    renderer: &mut TextRenderer,
+    cfg: &Config,
+    folders: &[Candidate],
+    installed: &Installed,
+) -> (Page, Layout) {
+    let status = status(installed.converter(), &installed.app);
+    let p = page(cfg, folders, installed);
+    let layout = layout_for(renderer, fb.var.yres, &p.items);
+    panel::render(
+        fb, renderer, &layout, "Settings", &status, TITLE_PX, &p.items,
+    );
+    (p, layout)
+}
+
 /// that change either return [`Exit::Fetch`] or [`Exit::Update`].
 /// [`Exit::Folder`] leaves `Config::out_dir` for the caller to write.
 pub fn run(
@@ -376,21 +394,17 @@ pub fn run(
     folders: &[Candidate],
     installed: &Installed,
 ) -> anyhow::Result<Exit> {
-    let converter = installed.converter();
-    let status = status(converter, &installed.app);
-    let mut p = page(cfg, folders, installed);
-    let mut layout = layout_for(renderer, fb.var.yres, &p.items);
+    let (mut p, mut layout) = draw(fb, renderer, cfg, folders, installed);
+    fb.send_update(panel::full_rect(fb), WAVEFORM_MODE_GC16)?;
 
     macro_rules! repaint {
         () => {{
-            panel::render(
-                fb, renderer, &layout, "Settings", &status, TITLE_PX, &p.items,
-            );
+            let (drawn, at) = draw(fb, renderer, cfg, folders, installed);
+            p = drawn;
+            layout = at;
             fb.send_update(panel::full_rect(fb), WAVEFORM_MODE_GC16)?;
         }};
     }
-
-    repaint!();
 
     loop {
         match input.next_event()? {
@@ -431,7 +445,7 @@ pub fn run(
                     panel::draw_row(fb, renderer, &layout, &p.items, tap.item);
                     fb.send_update(layout.row_rect(tap.item, fb.var.xres), WAVEFORM_MODE_DU)?;
                 } else {
-                    layout = layout_for(renderer, fb.var.yres, &p.items);
+                    // `repaint!` rebuilds both the page and its layout.
                     repaint!();
                 }
             }
@@ -440,15 +454,25 @@ pub fn run(
             }
             InputEvent::Tick => {
                 // This loop blocks until the panel is dismissed, so it is the
-                // only place a rotation or a relayout is noticed while it is up.
+                // only place a cover, a rotation or a relayout is noticed
+                // while it is up.
                 let pump = fb.pump_events();
+                if let Some(covered) = pump.covered {
+                    input.set_covered(covered);
+                }
+                input.retake();
                 let turned = input.follow_orientation();
                 if turned || pump.resized.is_some() {
                     input.set_size(fb.var.xres, fb.var.yres);
                     layout = layout_for(renderer, fb.var.yres, &p.items);
                 }
-                if turned || pump.resized.is_some() || pump.repaint {
-                    repaint!();
+                match pump.covered {
+                    // Covered: the panel belongs to the window over this one.
+                    Some(true) => {}
+                    // Uncovered: drawn without an `Expose` to ask for it.
+                    Some(false) => repaint!(),
+                    None if turned || pump.resized.is_some() || pump.repaint => repaint!(),
+                    None => {}
                 }
             }
             // `Input` holds the bezel keys grabbed; a press reaches no further.

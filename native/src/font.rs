@@ -137,7 +137,14 @@ fn rank(file_name: &str) -> (usize, usize) {
 /// [`PREFERRED`] takes rank [`PREFERRED`]`.len()` and stays in the chain.
 pub fn discover() -> Vec<Candidate> {
     let mut found: Vec<(usize, usize, PathBuf)> = Vec::new();
-    for dir in FONT_DIRS {
+    // `KFXDEDRM_FONTS` is a `:`-separated list searched ahead of [`FONT_DIRS`],
+    // which is how the preview draws with the device's faces off the device.
+    let extra = std::env::var("KFXDEDRM_FONTS").unwrap_or_default();
+    let dirs = extra
+        .split(':')
+        .filter(|dir| !dir.is_empty())
+        .chain(FONT_DIRS.iter().copied());
+    for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };

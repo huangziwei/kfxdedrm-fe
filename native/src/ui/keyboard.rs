@@ -336,6 +336,14 @@ fn hit(keys: &[KeyButton], tx: u32, ty: u32) -> Option<Key> {
     hit_index(keys, tx, ty).map(|i| keys[i].key)
 }
 
+/// The whole keyboard painted into `fb`, with `path` in the field and the
+/// shift latch open. [`run`]'s opening paint, without the loop around it.
+pub fn draw(fb: &mut Framebuffer, renderer: &mut TextRenderer, path: &str, scan_dirs: &[PathBuf]) {
+    let lh = renderer.line_height().max(1);
+    let keys = layout(fb.var.xres, fb.var.yres);
+    render_all(fb, renderer, &keys, path, scan_dirs, false, lh);
+}
+
 /// Runs the keyboard, returning the typed path on `[ Done ]` and `initial` on
 /// `[ Back ]`. The caller acts on a difference.
 ///
@@ -443,15 +451,28 @@ pub fn run(
             }
             InputEvent::Page(_) => {}
             InputEvent::Tick => {
-                // This loop blocks until the path is settled, so it is the only
-                // place a rotation or a relayout is noticed while it is up.
+                // This loop blocks until the path is settled, so it is the
+                // only place a cover, a rotation or a relayout is noticed
+                // while it is up.
                 let pump = fb.pump_events();
+                if let Some(covered) = pump.covered {
+                    pressed = None;
+                    input.set_covered(covered);
+                }
+                input.retake();
                 let turned = input.follow_orientation();
                 if turned || pump.resized.is_some() {
                     input.set_size(fb.var.xres, fb.var.yres);
                     keys = layout(fb.var.xres, fb.var.yres);
                 }
-                if turned || pump.resized.is_some() || pump.repaint {
+                let redraw = match pump.covered {
+                    // Covered: the panel belongs to the window over this one.
+                    Some(true) => false,
+                    // Uncovered: drawn without an `Expose` to ask for it.
+                    Some(false) => true,
+                    None => turned || pump.resized.is_some() || pump.repaint,
+                };
+                if redraw {
                     pressed = None;
                     render_all(fb, renderer, &keys, &path, scan_dirs, shift, lh);
                     fb.send_update(full_rect(fb), WAVEFORM_MODE_GC16)?;

@@ -15,7 +15,7 @@
 //!
 //! Every conversion here starts from `engine::output_path` — `<stem>.kfx-zip`
 //! for a KFX book, the book's own name for a MOBI-family one — and writes
-//! beside it, inside `config::OUT_DIR`.
+//! beside it, inside [`crate::config::Config::out_dir`].
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn a_soft_float_only_install_still_resolves() {
         // What is left after unpacking a zip whose hard-float build a device
-        // cannot start: the name `locate` used to look for is not there.
+        // cannot start: the plain name `locate` tries first is not there.
         let dir = tmpdir("armsf-only");
         let armsf = variant(&dir, "bokai-armsf", 0);
         assert_eq!(locate_in(&dir).map(|c| c.exe().to_path_buf()), Some(armsf));
