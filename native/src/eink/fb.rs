@@ -62,6 +62,52 @@ fn wire_channels(conn: &RustConnection, screen: &Screen, bpp: usize) -> Option<[
     ])
 }
 
+/// `pixel_bytes` rounded up to a multiple of `pad`, the bytes `put_image` takes
+/// per ZPixmap scanline.
+fn wire_stride(pixel_bytes: usize, pad: usize) -> usize {
+    let pad = pad.max(1);
+    pixel_bytes.div_ceil(pad) * pad
+}
+
+/// `band`'s packed-RGB rows, `xres` wide, into `wire`: one `bpp`-byte wire
+/// pixel each, rows `wire_stride` apart with the pad left at 0xFF. `bpp == 1`
+/// collapses to one luma byte; wider scatters R/G/B to `chan`.
+fn pack_band(
+    wire: &mut Vec<u8>,
+    band: &[u8],
+    xres: usize,
+    bpp: usize,
+    wire_stride: usize,
+    chan: [usize; 3],
+) {
+    wire.clear();
+    let bk_stride = xres * CH;
+    if bk_stride == 0 || wire_stride == 0 {
+        return;
+    }
+    let pixel_bytes = xres * bpp;
+    let [rb, gb, bb] = chan;
+    wire.resize(band.len() / bk_stride * wire_stride, 0xFF);
+    for (out, row) in wire
+        .chunks_exact_mut(wire_stride)
+        .zip(band.chunks_exact(bk_stride))
+    {
+        let (triples, _) = row.as_chunks::<CH>();
+        let pairs = out[..pixel_bytes].chunks_exact_mut(bpp).zip(triples);
+        if bpp == 1 {
+            for (w, rgb) in pairs {
+                w[0] = luma(rgb[0], rgb[1], rgb[2]);
+            }
+        } else {
+            for (w, rgb) in pairs {
+                w[rb] = rgb[0];
+                w[gb] = rgb[1];
+                w[bb] = rgb[2];
+            }
+        }
+    }
+}
+
 /// A rectangle to present, in screen coords.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct MxcfbRect {
@@ -86,6 +132,9 @@ pub struct Framebuffer {
     depth: u8,
     /// Wire bytes per pixel for `depth`: 1 at depth 8, 4 at depth 24/32.
     bytes_per_pixel: usize,
+    /// Wire bytes per scanline: [`wire_stride`] over `xres` and the format's
+    /// `scanline_pad`.
+    wire_stride: usize,
     /// `wire_channels`' R, G, B byte offsets. Depth-24 LSB-first is `[2, 1, 0]`.
     chan: [usize; 3],
     pub var: Var,
@@ -103,18 +152,23 @@ impl Framebuffer {
         let xres = screen.width_in_pixels as u32;
         let yres = screen.height_in_pixels as u32;
         let depth = screen.root_depth;
-        // `bits_per_pixel` for `depth`: 8 → 1 byte, 24/32 → 4 bytes.
-        let bytes_per_pixel = conn
+        let format = conn
             .setup()
             .pixmap_formats
             .iter()
-            .find(|f| f.depth == depth)
+            .find(|f| f.depth == depth);
+        // `bits_per_pixel` for `depth`: 8 → 1 byte, 24/32 → 4 bytes.
+        let bytes_per_pixel = format
             .map(|f| (f.bits_per_pixel as usize / 8).max(1))
             .unwrap_or(1);
+        // `scanline_pad` is 32 bits on every standard format.
+        let scanline_pad = format.map(|f| f.scanline_pad as usize / 8).unwrap_or(4);
+        let wire_stride = wire_stride(xres as usize * bytes_per_pixel, scanline_pad);
         // `[2, 1, 0]` is BGRX LSB-first, the lab126 depth-24 layout.
         let chan = wire_channels(&conn, &screen, bytes_per_pixel).unwrap_or([2, 1, 0]);
         eprintln!(
             "fb: xres={xres} yres={yres} depth={depth} bytes_per_pixel={bytes_per_pixel} \
+             scanline_pad={scanline_pad} wire_stride={wire_stride} \
              chan=[{},{},{}] root_visual=0x{:x}",
             chan[0], chan[1], chan[2], screen.root_visual,
         );
@@ -185,7 +239,7 @@ impl Framebuffer {
         eprintln!(
             "fb: max request {} bytes ({} rows/band at {} bpp)",
             max_req_bytes,
-            max_req_bytes / (xres as usize * bytes_per_pixel).max(1),
+            max_req_bytes / wire_stride.max(1),
             bytes_per_pixel
         );
 
@@ -197,6 +251,7 @@ impl Framebuffer {
             gc,
             depth,
             bytes_per_pixel,
+            wire_stride,
             chan,
             var: Var { xres, yres },
             backing,
@@ -260,21 +315,19 @@ impl Framebuffer {
         needs_repaint
     }
 
-    /// Present rows `rect.top..rect.top + rect.height`, converting `backing` to
-    /// the wire format per band: a luma byte at `bpp == 1`, R/G/B at `chan`
-    /// offsets over a 0xFF pad otherwise. `_waveform` is ignored.
+    /// Present rows `rect.top..rect.top + rect.height`, a band at a time through
+    /// [`pack_band`]. `_waveform` is ignored.
     pub fn send_update(&mut self, rect: MxcfbRect, _waveform: u32) -> Result<u32> {
         let bpp = self.bytes_per_pixel;
         let xres = self.var.xres as usize;
         let bk_stride = xres * CH; // backing bytes per scanline (RGB)
-        let wire_stride = xres * bpp; // wire bytes per scanline
+        let wire_stride = self.wire_stride; // wire bytes per scanline, padded
         let width = self.var.xres as u16;
         let top = rect.top.min(self.var.yres);
         let bottom = rect.top.saturating_add(rect.height).min(self.var.yres);
         let max_rows = (self.max_req_bytes.saturating_sub(64) / wire_stride.max(1)).max(1);
-        let [rb, gb, bb] = self.chan;
 
-        // Reused across bands; pad bytes keep the 0xFF fill.
+        // `wire` is reused across bands.
         let mut wire: Vec<u8> = Vec::new();
 
         let mut y = top;
@@ -282,25 +335,14 @@ impl Framebuffer {
             let h = ((bottom - y) as usize).min(max_rows);
             let s = y as usize * bk_stride;
             let e = s + h * bk_stride;
-            let band = &self.backing[s..e];
-            let px = h * xres;
-
-            wire.clear();
-            wire.resize(px * bpp, 0xFF);
-            // `band` is `h * xres * CH` bytes; `as_chunks` leaves no remainder.
-            let (triples, _) = band.as_chunks::<CH>();
-            let pairs = wire.chunks_exact_mut(bpp).zip(triples);
-            if bpp == 1 {
-                for (w, src) in pairs {
-                    w[0] = luma(src[0], src[1], src[2]);
-                }
-            } else {
-                for (w, src) in pairs {
-                    w[rb] = src[0];
-                    w[gb] = src[1];
-                    w[bb] = src[2];
-                }
-            }
+            pack_band(
+                &mut wire,
+                &self.backing[s..e],
+                xres,
+                bpp,
+                wire_stride,
+                self.chan,
+            );
 
             self.conn
                 .put_image(
@@ -355,5 +397,67 @@ impl Drop for Framebuffer {
         // `destroy_window` hands the screen back to the WM. Best effort.
         let _ = self.conn.destroy_window(self.win);
         let _ = self.conn.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pack_band, wire_stride};
+
+    /// `wire_stride` over the shipped panel widths at both `bytes_per_pixel` a
+    /// Kindle X server offers, under a 4-byte pad.
+    #[test]
+    fn a_scanline_reaches_the_pad() {
+        // 758 is the one width that is not itself a multiple of the pad.
+        for (width, bpp, stride) in [
+            (600, 1, 600),
+            (758, 1, 760),
+            (1072, 1, 1072),
+            (1236, 1, 1236),
+            (1264, 1, 1264),
+            (1860, 1, 1860),
+            (758, 4, 3032),
+            (1272, 4, 5088),
+            (1860, 4, 7440),
+        ] {
+            assert_eq!(wire_stride(width * bpp, 4), stride, "{width} at {bpp} bpp");
+            assert_eq!(wire_stride(width * bpp, 4) % 4, 0);
+        }
+    }
+
+    /// `pad` of 0 answers `pixel_bytes`.
+    #[test]
+    fn a_pad_of_zero_is_one_byte() {
+        assert_eq!(wire_stride(758, 0), 758);
+    }
+
+    /// `pack_band` writes four bytes a row for three pixels at 1 bpp, the
+    /// fourth left at the 0xFF pad.
+    #[test]
+    fn a_short_row_keeps_its_pad() {
+        #[rustfmt::skip]
+        let band: Vec<u8> = vec![
+            0, 0, 0,  255, 255, 255,  128, 128, 128,
+            255, 0, 0,  0, 255, 0,  0, 0, 255,
+        ];
+        let mut wire = Vec::new();
+        pack_band(&mut wire, &band, 3, 1, 4, [2, 1, 0]);
+        assert_eq!(wire, [0, 255, 128, 0xFF, 76, 149, 28, 0xFF]);
+    }
+
+    /// `pack_band` scatters to `chan` at 4 bpp, leaving the fourth byte at 0xFF.
+    #[test]
+    fn a_wide_pixel_scatters_to_its_channels() {
+        let mut wire = Vec::new();
+        pack_band(&mut wire, &[10, 20, 30], 1, 4, 4, [2, 1, 0]);
+        assert_eq!(wire, [30, 20, 10, 0xFF]);
+    }
+
+    /// `pack_band` answers an empty `wire` for an `xres` of 0.
+    #[test]
+    fn no_columns_packs_nothing() {
+        let mut wire = vec![1, 2, 3];
+        pack_band(&mut wire, &[], 0, 1, 4, [2, 1, 0]);
+        assert!(wire.is_empty());
     }
 }

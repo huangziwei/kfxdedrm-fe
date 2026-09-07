@@ -17,6 +17,29 @@ use x11rb::wrapper::ConnectionExt as _;
 /// Where the dump lands, on the user partition.
 const OUT_PATH: &str = "/mnt/us/kfxdedrm-fe-xprobe.txt";
 
+/// `bits_per_pixel / 8` and `scanline_pad / 8` for `depth`, from
+/// `pixmap_formats`. A depth the server does not list answers `(1, 4)`.
+fn wire_format(conn: &impl Connection, depth: u8) -> (usize, usize) {
+    conn.setup()
+        .pixmap_formats
+        .iter()
+        .find(|f| f.depth == depth)
+        .map(|f| {
+            (
+                (f.bits_per_pixel as usize / 8).max(1),
+                (f.scanline_pad as usize / 8).max(1),
+            )
+        })
+        .unwrap_or((1, 4))
+}
+
+/// `width` pixels at `bpp` rounded up to `pad`, the bytes `put_image` takes per
+/// ZPixmap scanline.
+fn row_bytes(width: usize, bpp: usize, pad: usize) -> usize {
+    let pad = pad.max(1);
+    (width * bpp).div_ceil(pad) * pad
+}
+
 pub fn run() -> Result<()> {
     let mut o = String::new();
     let _ = writeln!(o, "== kfxdedrm-fe X/eink probe ==");
@@ -140,13 +163,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     let xres = screen.width_in_pixels as usize;
     let yres = screen.height_in_pixels as usize;
     let depth = screen.root_depth;
-    let bpp = conn
-        .setup()
-        .pixmap_formats
-        .iter()
-        .find(|f| f.depth == depth)
-        .map(|f| (f.bits_per_pixel as usize / 8).max(1))
-        .unwrap_or(1);
+    let (bpp, pad) = wire_format(conn, depth);
 
     let win = match conn.generate_id() {
         Ok(w) => w,
@@ -214,9 +231,9 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
     for (label, limit) in [
         ("256KB", 256 * 1024usize),
         ("1MB", 1024 * 1024),
-        ("full-screen", xres * yres * bpp + 1024),
+        ("full-screen", yres * row_bytes(xres, bpp, pad) + 1024),
     ] {
-        let stride = xres * bpp;
+        let stride = row_bytes(xres, bpp, pad);
         let max_rows = (limit.saturating_sub(64) / stride.max(1)).max(1).min(yres);
         let bands = yres.div_ceil(max_rows);
         let t0 = Instant::now();
@@ -267,7 +284,7 @@ fn probe_paint(conn: &impl Connection, screen: &x11rb::protocol::xproto::Screen,
         }
     }
 
-    probe_supersession(conn, screen, win, gc, xres, yres, bpp, depth, o);
+    probe_supersession(conn, screen, win, gc, xres, yres, bpp, pad, depth, o);
 
     let _ = conn.destroy_window(win);
     let _ = conn.flush();
@@ -285,10 +302,11 @@ fn probe_supersession(
     xres: usize,
     yres: usize,
     bpp: usize,
+    pad: usize,
     depth: u8,
     o: &mut String,
 ) {
-    let stride = xres * bpp;
+    let stride = row_bytes(xres, bpp, pad);
     let full = |shade: u8| vec![shade; yres * stride];
 
     let paint_full = |shade: u8| {
@@ -316,7 +334,7 @@ fn probe_supersession(
             if x + S > xres {
                 continue;
             }
-            let buf = vec![shade; S * S * bpp];
+            let buf = vec![shade; S * row_bytes(S, bpp, pad)];
             let _ = conn.put_image(
                 ImageFormat::Z_PIXMAP,
                 win,
@@ -418,13 +436,7 @@ fn probe_backing_store(o: &mut String) {
     let xres = screen.width_in_pixels as usize;
     let yres = screen.height_in_pixels as usize;
     let depth = screen.root_depth;
-    let bpp = conn
-        .setup()
-        .pixmap_formats
-        .iter()
-        .find(|f| f.depth == depth)
-        .map(|f| (f.bits_per_pixel as usize / 8).max(1))
-        .unwrap_or(1);
+    let (bpp, pad) = wire_format(&conn, depth);
 
     for (label, backing) in [
         ("WITHOUT backing store", false),
@@ -475,7 +487,7 @@ fn probe_backing_store(o: &mut String) {
                 .and_then(|c| c.reply().map(|_| ()).map_err(|e| e.to_string()));
         };
         let put = |shade: u8, w: usize, h: usize, x: i16, y: i16| {
-            let buf = vec![shade; w * h * bpp];
+            let buf = vec![shade; h * row_bytes(w, bpp, pad)];
             let _ = conn.put_image(
                 ImageFormat::Z_PIXMAP,
                 win,
@@ -556,13 +568,7 @@ fn probe_fb_readback(o: &mut String) {
     let xres = screen.width_in_pixels as usize;
     let yres = screen.height_in_pixels as usize;
     let depth = screen.root_depth;
-    let bpp = conn
-        .setup()
-        .pixmap_formats
-        .iter()
-        .find(|f| f.depth == depth)
-        .map(|f| (f.bits_per_pixel as usize / 8).max(1))
-        .unwrap_or(1);
+    let (bpp, pad) = wire_format(&conn, depth);
     if xres != fb_w {
         let _ = writeln!(
             o,
@@ -621,7 +627,7 @@ fn probe_fb_readback(o: &mut String) {
         .filter(|(x, y)| x + S <= xres && y + S <= yres)
         .collect();
 
-    let white = vec![0xFFu8; yres * xres * bpp];
+    let white = vec![0xFFu8; yres * row_bytes(xres, bpp, pad)];
     let _ = conn.put_image(
         ImageFormat::Z_PIXMAP,
         win,
@@ -637,7 +643,7 @@ fn probe_fb_readback(o: &mut String) {
     sync();
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    let black = vec![0x00u8; S * S * bpp];
+    let black = vec![0x00u8; S * row_bytes(S, bpp, pad)];
     for (x, y) in &squares {
         let _ = conn.put_image(
             ImageFormat::Z_PIXMAP,
